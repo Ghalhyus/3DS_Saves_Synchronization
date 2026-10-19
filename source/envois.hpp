@@ -8,7 +8,7 @@
 /// Empreinte SHA-256 (hexadécimal) d'une sauvegarde.
 std::string empreinte(const std::vector<u8>& contenu);
 
-/// Empreinte de la dernière version envoyée (et acceptée ou déjà à jour) de chaque sauvegarde, gardée dans
+/// Empreinte et nom de fichier de la dernière version envoyée (et acceptée ou déjà à jour) de chaque sauvegarde, gardés dans
 /// sdmc:/3ds/PokeBankSync/envois.txt : une sauvegarde identique est « déjà envoyée » et n'est pas cochée par défaut.
 class Envois
 {

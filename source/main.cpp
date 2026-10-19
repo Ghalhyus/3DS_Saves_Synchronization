@@ -69,7 +69,14 @@ void definirStatut(const std::string& texte, const char* couleur = NORMAL)
     couleurStatut = couleur;
 }
 
-/// État d'une ligne d'après l'empreinte de son dernier envoi.
+/// Ce qui est retenu du dernier envoi : l'empreinte du contenu et le nom du fichier. Un nom qui change (version exacte
+/// du jeu enfin reconnue) rend la ligne « modifiée » : le site renomme alors la sauvegarde stockée.
+std::string trace(const Ligne& ligne)
+{
+    return ligne.empreinte + "|" + ligne.sauvegarde.fichier;
+}
+
+/// État d'une ligne d'après son dernier envoi.
 void etatSelonEnvois(Ligne& ligne)
 {
     if (ligne.empreinte.empty())
@@ -82,11 +89,11 @@ void etatSelonEnvois(Ligne& ligne)
     auto dernier = envois.dernier(ligne.sauvegarde.cle);
     if (dernier.empty())
         ligne.etat = "nouvelle", ligne.couleur = CYAN;
-    else if (dernier != ligne.empreinte)
+    else if (dernier != trace(ligne))
         ligne.etat = "modifiée", ligne.couleur = JAUNE;
     else
         ligne.etat = "envoyée", ligne.couleur = GRIS;
-    ligne.cochee = dernier != ligne.empreinte;
+    ligne.cochee = dernier != trace(ligne);
 }
 
 void dessiner()
@@ -261,7 +268,7 @@ void relierAuSite()
         return;
     site = normaliserSite(site);
     std::string code;
-    if (!saisir("Code de « Mes sauvegardes » (ABCD-EFGH)", "", 12, code))
+    if (!saisir("Code de « Synchronisation 3DS » (ABCD-EFGH)", "", 12, code))
         return;
 
     patienter("Liaison au site...");
@@ -339,7 +346,7 @@ void envoyerCochees()
             ligne.couleur = VERT;
             ligne.cochee = false;
             ligne.empreinte = empreinte(contenu);
-            envois.noter(ligne.sauvegarde.cle, ligne.empreinte);
+            envois.noter(ligne.sauvegarde.cle, trace(ligne));
             reussies++;
             break;
         case StatutEnvoi::Refusee:
@@ -448,6 +455,7 @@ int main()
         dessiner();
     }
 
+    terminerJeux();
     arreterReseau();
     cfguExit();
     amExit();

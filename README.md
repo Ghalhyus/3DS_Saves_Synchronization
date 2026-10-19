@@ -12,7 +12,7 @@ depuis une 3DS »). Envoi seulement : rien n'est jamais écrit dans les sauvegar
 ## Utilisation
 
 1. Copier `PokeBankSync.3dsx` dans `sdmc:/3ds/` et le lancer depuis le Homebrew Launcher.
-2. Sur le site, « Mes sauvegardes » → « Relier une 3DS » affiche un code (`ABCD-EFGH`, valable 10 minutes).
+2. Sur le site, « Synchronisation 3DS » (menu « Sauvegardes », `/sauvegardes/3ds`) → « Relier une 3DS » affiche un code (`ABCD-EFGH`, valable 10 minutes).
 3. Sur la 3DS, **Y** : taper l'adresse du site (`https://...`), puis le code. La console reçoit un jeton, gardé dans
    `sdmc:/3ds/PokeBankSync/config.ini` ; le site l'affiche dans sa liste (« 3DS de <nom d'utilisateur de la console> »).
 4. La liste (écran du haut) montre les sauvegardes trouvées et leur état : **nouvelle** (jamais envoyée depuis cette
@@ -30,10 +30,12 @@ envoyer, **Y** relier au site (ou changer de site), **SELECT** chercher de nouve
 | Source | Comment | Fichier envoyé |
 |---|---|---|
 | Jeux 3DS installés ou sur cartouche : X, Y, Rubis Oméga, Saphir Alpha, Soleil, Lune, Ultra-Soleil, Ultra-Lune | Identifiant de titre (le même dans toutes les régions) ; fichier `main` de la sauvegarde du jeu | « Pokémon X.sav »... |
-| Console virtuelle : Rouge, Vert, Bleu, Jaune, Or, Argent, Cristal | Identifiants de titre connus (repris de PKSM) ; pour les autres régions, un nom de jeu en « Pokémon » (hors Flipper et Trading Card Game) et une sauvegarde Game Boy de 32 Ko ; fichier `sav.dat` | Nom du jeu + `.sav` |
-| Fichiers `.sav` de la carte SD (TWiLight Menu++, open_agb_firm, mGBA...) | Dossiers de `config.ini`, sous-dossiers compris (6 niveaux). Gardé si la ROM du même nom (`.nds`, `.gba`, `.gb`...), cherchée dans ces dossiers, est un jeu Pokémon principal (code du jeu dans son en-tête : Diamant à Blanc 2, Rubis à Vert Feuille, Rouge à Cristal) ; sans ROM, si son nom contient « pokemon » ou « pkmn » | Nom du fichier |
+| Console virtuelle (eShop ou injectée en CIA) : Rouge, Vert, Bleu, Jaune, Or, Argent, Cristal | Identifiant de titre de chaque version et langue (38 titres : japonais, anglais, allemand, français, espagnol, italien, coréen), qui donne la version exacte ; pour les jeux injectés, une sauvegarde `sav.dat` de 32 Ko reconnue **à son contenu**, comme le fait PKHeX (liste de l'équipe à sa place dans Rouge/Bleu/Jaune, Or/Argent ou Cristal, versions internationales et japonaises), quel que soit le nom du jeu | « Pokémon Rouge.sav »... ; jeu injecté : nom de son icône, sinon « Pokémon Or ou Argent.sav »... |
+| Jeux GBA injectés en CIA (AGB_FIRM) : Rubis, Saphir, Émeraude, Rouge Feu, Vert Feuille | Titre dont le fichier spécial de « sauvegarde et contenu » (ouvert par le service bas niveau `PxiFS0`, comme PKSM : `FSUSER` le refuse ; ce service n'accepte qu'une connexion, déjà prise par le système, empruntée grâce à un appel système de Luma3DS ; lu comme PKSM : deux emplacements avec un en-tête `.SAV` de 0x200 octets, le plus récent d'après son nombre d'écritures) contient une sauvegarde de 3e génération (signature `0x08012025` de ses secteurs) : **quel que soit le nom** donné au jeu | Nom du jeu + `.sav` |
+| Fichiers `.sav` de la carte SD (TWiLight Menu++...) | Dossiers de `config.ini`, sous-dossiers compris (6 niveaux). Gardé si la ROM du même nom (`.nds`, `.gba`, `.gb`...), cherchée dans ces dossiers, puis dans le dossier de la sauvegarde et celui du dessus (TWiLight : `sdmc:/saves/X.sav` pour `sdmc:/X.nds`), est un jeu Pokémon principal (code du jeu dans son en-tête : Diamant à Blanc 2, Rubis à Vert Feuille, Rouge à Cristal) ; sans ROM, si son nom contient « pokemon » ou « pkmn » | Nom du fichier |
 
-Les cartouches DS ne sont pas lues. Le site revérifie tout avec PKHeX : un fichier qui n'est pas une sauvegarde Pokémon
+Les jeux annexes (Ranger, Donjon Mystère, Conquest...) sont écartés grâce au code de leur ROM, même avec « Pokémon »
+dans le nom. Les cartouches DS ne sont pas lues. Le site revérifie tout avec PKHeX : un fichier qui n'est pas une sauvegarde Pokémon
 est refusé.
 
 Une même partie trouvée à plusieurs endroits (cartouche et copie sur la SD) est envoyée plusieurs fois : le site garde la
@@ -44,9 +46,16 @@ plus avancée et refuse les autres (« moins de temps de jeu »), sans rien chan
 Dans `sdmc:/3ds/PokeBankSync/` :
 
 - `config.ini` : `site=`, `jeton=` (ne pas le partager ; « Retirer » sur le site le rend inutilisable), et une ligne
-  `dossier=` par dossier à parcourir. Sans ligne `dossier=` : `sdmc:/roms`, `sdmc:/3ds/open_agb_firm`, `sdmc:/3ds/mGBA`.
-- `envois.txt` : empreinte SHA-256 de la dernière version envoyée de chaque sauvegarde (état « envoyée »). Vidé quand la
+  `dossier=` par dossier à parcourir. Sans ligne `dossier=` : `sdmc:/saves` et `sdmc:/roms` (TWiLight Menu++ : dossier
+  `saves` à côté des ROM, à la racine ou dans `roms/nds`...). La liste de la première version (`sdmc:/roms`,
+  `sdmc:/3ds/open_agb_firm`, `sdmc:/3ds/mGBA`), écrite d'office à la liaison, est remplacée par celle-ci.
+- `envois.txt` : empreinte SHA-256 et nom de fichier de la dernière version envoyée de chaque sauvegarde (état « envoyée » ;
+  un nom qui change, version exacte enfin reconnue, la rend « modifiée » et le site renomme la sauvegarde stockée). Vidé quand la
   console est reliée à un autre site ou un autre compte.
+- `diagnostic.txt` : réécrit à chaque recherche. Pour chaque jeu installé hors de la liste connue (jeux injectés
+  surtout) : façon dont le homebrew a été lancé, puis identifiant de titre, nom, fichiers de sa sauvegarde ordinaire,
+  emplacements de sauvegarde GBA, codes d'erreur des deux façons d'ouvrir l'archive « sauvegarde et contenu » (icône,
+  sauvegarde GBA), et pourquoi il est retenu ou écarté. À regarder quand un jeu n'apparaît pas.
 - `certificats.pem` (facultatif) : racines de confiance en plus de celles du programme, si le certificat du site n'est
   pas reconnu.
 
@@ -74,7 +83,8 @@ le Homebrew Launcher, puis `3dslink PokeBankSync.3dsx` (outils de devkitPro).
 | Fichier | Rôle |
 |---|---|
 | `source/main.cpp` | Écrans (liste en haut, détail et touches en bas), boucle principale, liaison, envoi |
-| `source/sauvegardes.cpp` | Recherche des sauvegardes : jeux 3DS et Console virtuelle (identifiants de titre, nom de l'icône SMDH, archive de sauvegarde), fichiers `.sav` de la carte SD (en-tête des ROM) ; lecture |
+| `source/sauvegardes.cpp` | Recherche des sauvegardes : jeux 3DS et Console virtuelle (identifiants de titre, nom de l'icône SMDH, archive de sauvegarde), jeux GBA injectés (format AGB_FIRM), fichiers `.sav` de la carte SD (en-tête des ROM) ; lecture |
+| `source/luma.s` | Appel système de Luma3DS `svcControlService` (svc 0xB0), pour emprunter la connexion du système à `PxiFS0` |
 | `source/site.cpp` | API du site (`/api/sync/liaison`, `/compte`, `/sauvegardes`) en HTTPS, messages d'erreur réseau |
 | `source/envois.cpp` | Empreintes des derniers envois (`envois.txt`), SHA-256 |
 | `source/config.cpp` | `config.ini` : site, jeton, dossiers |
@@ -90,7 +100,8 @@ le Homebrew Launcher, puis `3dslink PokeBankSync.3dsx` (outils de devkitPro).
 | [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) (paquet `3ds-mbedtls`) | TLS, SHA-256 | Apache-2.0 |
 | [Jansson](https://github.com/akheron/jansson) (paquet `3ds-jansson`) | JSON du site | MIT |
 | [zlib](https://zlib.net) (paquet `3ds-zlib`) | Dépendance de libcurl | zlib |
-| [PKSM](https://github.com/FlagBrew/PKSM) (FlagBrew) | Identifiants de titre des jeux 3DS et de la Console virtuelle, codes des jeux DS, fichiers `main` / `sav.dat` des sauvegardes | GPL-3.0 |
+| [List of Pokémon titles for Nintendo 3DS](https://gist.github.com/Bl4ckSh4rk/256ed3b857c9677310837d5180121f35) (Bl4ckSh4rk) | Identifiants de titre de la Console virtuelle, par version et par langue (`JEUX` dans `sauvegardes.cpp`) | Données publiées (gist) |
+| [PKSM](https://github.com/FlagBrew/PKSM) (FlagBrew) | Identifiants de titre des jeux 3DS et de la Console virtuelle (recoupés), codes des jeux DS, fichiers `main` / `sav.dat` des sauvegardes, format des sauvegardes GBA injectées (`titles/loader.cpp`) | GPL-3.0 |
 | [Checkpoint](https://github.com/FlagBrew/Checkpoint) (FlagBrew) | Méthode de lecture de l'icône (SMDH) et de l'archive de sauvegarde d'un titre | GPL-3.0 |
 | ISRG (Let's Encrypt), Sectigo (USERTrust) | Certificats racines de `data/racines.pem` | Certificats publics |
 

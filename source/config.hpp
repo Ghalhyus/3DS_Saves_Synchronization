@@ -9,18 +9,18 @@ constexpr const char* DOSSIER_APPLI = "sdmc:/3ds/PokeBankSync";
 /// Réglages gardés dans sdmc:/3ds/PokeBankSync/config.ini (modifiable depuis un PC) :
 ///   site=https://pokebank.exemple.fr
 ///   jeton=...                      (donné par le site à la liaison, ne pas le partager)
-///   dossier=sdmc:/roms             (une ligne par dossier à parcourir, sous-dossiers compris)
+///   dossier=sdmc:/saves            (une ligne par dossier à parcourir, sous-dossiers compris ; aucune : par défaut)
 struct Config
 {
     std::string site;
     std::string jeton;
     std::vector<std::string> dossiers;
+    bool dossiersChoisis = false; // lignes dossier= dans config.ini (sinon dossiersParDefaut, qui peuvent évoluer)
 
     bool relie() const { return !site.empty() && !jeton.empty(); }
 };
 
-/// Dossiers parcourus quand config.ini n'en donne aucun : TWiLight Menu++ (sdmc:/roms/nds/saves...), mGBA,
-/// open_agb_firm.
+/// Dossiers parcourus quand config.ini n'en donne aucun : ceux de TWiLight Menu++ (sdmc:/saves, sdmc:/roms).
 const std::vector<std::string>& dossiersParDefaut();
 
 /// Lit config.ini (réglages par défaut s'il n'existe pas encore).

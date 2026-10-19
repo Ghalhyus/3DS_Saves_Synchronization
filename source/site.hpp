@@ -23,7 +23,7 @@ struct ResultatLiaison
     std::string compte;
 };
 
-/// Échange le code affiché dans « Mes sauvegardes » contre un jeton longue durée.
+/// Échange le code affiché dans « Synchronisation 3DS » (site) contre un jeton longue durée.
 ResultatLiaison relier(const std::string& site, const std::string& code, const std::string& nomConsole);
 
 struct ResultatCompte

@@ -20,13 +20,24 @@ std::string sansEspaces(const std::string& s)
 
 const std::vector<std::string>& dossiersParDefaut()
 {
+    // TWiLight Menu++ : « saves » à côté des ROM (sdmc:/saves pour des ROM à la racine), ou son dossier sdmc:/roms.
     static const std::vector<std::string> dossiers = {
+        "sdmc:/saves",
         "sdmc:/roms",
-        "sdmc:/3ds/open_agb_firm",
-        "sdmc:/3ds/mGBA",
     };
     return dossiers;
 }
+
+namespace {
+
+/// Dossiers par défaut de la première version, écrits tels quels dans config.ini à la liaison : ce n'est pas un choix de
+/// l'utilisateur, ils sont remplacés par les dossiers par défaut actuels.
+bool anciensDossiersParDefaut(const std::vector<std::string>& dossiers)
+{
+    return dossiers == std::vector<std::string>{"sdmc:/roms", "sdmc:/3ds/open_agb_firm", "sdmc:/3ds/mGBA"};
+}
+
+} // namespace
 
 Config chargerConfig()
 {
@@ -53,7 +64,8 @@ Config chargerConfig()
         }
         fclose(f);
     }
-    if (config.dossiers.empty())
+    config.dossiersChoisis = !config.dossiers.empty() && !anciensDossiersParDefaut(config.dossiers);
+    if (!config.dossiersChoisis)
         config.dossiers = dossiersParDefaut();
     return config;
 }
@@ -70,8 +82,15 @@ bool enregistrerConfig(const Config& config)
     fprintf(f, "site=%s\n", config.site.c_str());
     fprintf(f, "jeton=%s\n", config.jeton.c_str());
     fprintf(f, "\n# Dossiers ou chercher les sauvegardes (.sav) des jeux DS, GBA et Game Boy, sous-dossiers compris.\n");
-    for (const auto& dossier : config.dossiers)
-        fprintf(f, "dossier=%s\n", dossier.c_str());
+    if (config.dossiersChoisis)
+        for (const auto& dossier : config.dossiers)
+            fprintf(f, "dossier=%s\n", dossier.c_str());
+    else
+    {
+        fprintf(f, "# Sans ligne dossier= (enlever le # pour en choisir), ceux-ci :\n");
+        for (const auto& dossier : dossiersParDefaut())
+            fprintf(f, "#dossier=%s\n", dossier.c_str());
+    }
     bool ok = !ferror(f);
     return fclose(f) == 0 && ok;
 }

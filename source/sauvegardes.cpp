@@ -3,13 +3,30 @@
 #include "texte.hpp"
 
 #include <algorithm>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <dirent.h>
+#include <functional>
 #include <map>
 #include <sys/stat.h>
 
 namespace {
+
+/// Journal de la dernière recherche (sdmc:/3ds/PokeBankSync/diagnostic.txt) : ce qui a été lu pour chaque jeu installé
+/// hors de JEUX, pour comprendre pourquoi un jeu (injecté surtout) n'est pas reconnu. Null en dehors de chercherJeux.
+FILE* journal = nullptr;
+
+void noter(const char* format, ...) __attribute__((format(printf, 1, 2)));
+void noter(const char* format, ...)
+{
+    if (!journal)
+        return;
+    va_list arguments;
+    va_start(arguments, format);
+    vfprintf(journal, format, arguments);
+    va_end(arguments);
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Jeux 3DS et Console virtuelle
@@ -19,28 +36,63 @@ struct JeuConnu
 {
     u64 titre;
     const char* nom;
-    bool consoleVirtuelle; // sauvegarde « sav.dat » au lieu de « main »
+    const char* region; // Console virtuelle : langue de cette version ; nullptr pour les jeux 3DS (sauvegarde « main »)
 };
 
-// Identifiants de titre repris de PKSM (FlagBrew, GPL-3.0 : assets/romfs/config.json, titres par défaut). Les jeux 3DS
-// ont le même identifiant dans toutes les régions ; pour la Console virtuelle, les autres régions sont reconnues par
-// leur nom (voir estConsoleVirtuellePokemon).
+// Les jeux 3DS ont le même identifiant de titre dans toutes les régions (repris de PKSM, FlagBrew, GPL-3.0 :
+// assets/romfs/config.json). La Console virtuelle a un identifiant par version et par langue : liste des titres Pokémon
+// 3DS de Bl4ckSh4rk (gist « List of Pokémon titles for Nintendo 3DS »), qui recoupe celle de PKSM. Un jeu Game Boy
+// absent d'ici (injecté) est reconnu à sa sauvegarde, sans sa version exacte (voir jeuGameBoy).
 const JeuConnu JEUX[] = {
-    {0x0004000000055D00, "Pokémon X", false},
-    {0x0004000000055E00, "Pokémon Y", false},
-    {0x000400000011C400, "Pokémon Rubis Oméga", false},
-    {0x000400000011C500, "Pokémon Saphir Alpha", false},
-    {0x0004000000164800, "Pokémon Soleil", false},
-    {0x0004000000175E00, "Pokémon Lune", false},
-    {0x00040000001B5000, "Pokémon Ultra-Soleil", false},
-    {0x00040000001B5100, "Pokémon Ultra-Lune", false},
-    {0x0004000000171000, "Pokémon Rouge", true},
-    {0x0004000000170D00, "Pokémon Vert", true},
-    {0x0004000000171100, "Pokémon Bleu", true},
-    {0x0004000000171200, "Pokémon Jaune", true},
-    {0x0004000000172600, "Pokémon Or", true},
-    {0x0004000000172700, "Pokémon Argent", true},
-    {0x0004000000172800, "Pokémon Cristal", true},
+    {0x0004000000055D00, "Pokémon X", nullptr},
+    {0x0004000000055E00, "Pokémon Y", nullptr},
+    {0x000400000011C400, "Pokémon Rubis Oméga", nullptr},
+    {0x000400000011C500, "Pokémon Saphir Alpha", nullptr},
+    {0x0004000000164800, "Pokémon Soleil", nullptr},
+    {0x0004000000175E00, "Pokémon Lune", nullptr},
+    {0x00040000001B5000, "Pokémon Ultra-Soleil", nullptr},
+    {0x00040000001B5100, "Pokémon Ultra-Lune", nullptr},
+
+    {0x0004000000170C00, "Pokémon Rouge", "japonais"},
+    {0x0004000000170D00, "Pokémon Vert", "japonais"},
+    {0x0004000000170E00, "Pokémon Bleu", "japonais"},
+    {0x0004000000170F00, "Pokémon Jaune", "japonais"},
+    {0x0004000000171000, "Pokémon Rouge", "anglais"},
+    {0x0004000000171100, "Pokémon Bleu", "anglais"},
+    {0x0004000000171200, "Pokémon Jaune", "anglais"},
+    {0x0004000000171300, "Pokémon Rouge", "allemand"},
+    {0x0004000000171400, "Pokémon Bleu", "allemand"},
+    {0x0004000000171500, "Pokémon Jaune", "allemand"},
+    {0x0004000000171600, "Pokémon Rouge", "français"},
+    {0x0004000000171700, "Pokémon Bleu", "français"},
+    {0x0004000000171800, "Pokémon Jaune", "français"},
+    {0x0004000000171900, "Pokémon Rouge", "espagnol"},
+    {0x0004000000171A00, "Pokémon Bleu", "espagnol"},
+    {0x0004000000171B00, "Pokémon Jaune", "espagnol"},
+    {0x0004000000171C00, "Pokémon Rouge", "italien"},
+    {0x0004000000171D00, "Pokémon Bleu", "italien"},
+    {0x0004000000171E00, "Pokémon Jaune", "italien"},
+
+    {0x0004000000172300, "Pokémon Or", "japonais"},
+    {0x0004000000172400, "Pokémon Argent", "japonais"},
+    {0x0004000000172500, "Pokémon Cristal", "japonais"},
+    {0x0004000000172600, "Pokémon Or", "anglais"},
+    {0x0004000000172700, "Pokémon Argent", "anglais"},
+    {0x0004000000172800, "Pokémon Cristal", "anglais"},
+    {0x0004000000172900, "Pokémon Or", "allemand"},
+    {0x0004000000172A00, "Pokémon Argent", "allemand"},
+    {0x0004000000172B00, "Pokémon Cristal", "allemand"},
+    {0x0004000000172C00, "Pokémon Or", "français"},
+    {0x0004000000172D00, "Pokémon Argent", "français"},
+    {0x0004000000172E00, "Pokémon Cristal", "français"},
+    {0x0004000000172F00, "Pokémon Or", "espagnol"},
+    {0x0004000000173000, "Pokémon Argent", "espagnol"},
+    {0x0004000000173100, "Pokémon Cristal", "espagnol"},
+    {0x0004000000173200, "Pokémon Or", "italien"},
+    {0x0004000000173300, "Pokémon Argent", "italien"},
+    {0x0004000000173400, "Pokémon Cristal", "italien"},
+    {0x0004000000173500, "Pokémon Or", "coréen"},
+    {0x0004000000173600, "Pokémon Argent", "coréen"},
 };
 
 constexpr u32 APPLICATION = 0x00040000; // partie haute des identifiants de jeux (ni mises à jour, ni démos, ni système)
@@ -53,24 +105,77 @@ const JeuConnu* jeuConnu(u64 titre)
     return nullptr;
 }
 
+/// Fichier de l'archive « sauvegarde et contenu » d'un titre (icône, sauvegarde d'un jeu GBA injecté). Ouvert
+/// directement (comme Checkpoint), sinon en ouvrant l'archive puis le fichier (comme PKSM) ; fermé à la destruction.
+struct FichierDeContenu
+{
+    Handle fichier = 0;
+    FS_Archive archive = 0;
+    bool ouvert = false;
+    Result direct = 0, parArchive = 0; // codes d'erreur des deux façons, pour le journal
+
+    FichierDeContenu(u64 titre, FS_MediaType media, const u32* chemin, u32 tailleChemin)
+    {
+        u32 cheminArchive[4] = {static_cast<u32>(titre), static_cast<u32>(titre >> 32), static_cast<u32>(media), 0};
+        FS_Path archivePath{PATH_BINARY, sizeof cheminArchive, cheminArchive};
+        FS_Path filePath{PATH_BINARY, tailleChemin, chemin};
+        direct = FSUSER_OpenFileDirectly(&fichier, ARCHIVE_SAVEDATA_AND_CONTENT, archivePath, filePath, FS_OPEN_READ, 0);
+        if (R_SUCCEEDED(direct))
+        {
+            ouvert = true;
+            return;
+        }
+        parArchive = FSUSER_OpenArchive(&archive, ARCHIVE_SAVEDATA_AND_CONTENT, archivePath);
+        if (R_FAILED(parArchive))
+        {
+            archive = 0;
+            return;
+        }
+        parArchive = FSUSER_OpenFile(&fichier, archive, filePath, FS_OPEN_READ, 0);
+        ouvert = R_SUCCEEDED(parArchive);
+    }
+
+    ~FichierDeContenu()
+    {
+        if (ouvert)
+            FSFILE_Close(fichier);
+        if (archive)
+            FSUSER_CloseArchive(archive);
+    }
+
+    FichierDeContenu(const FichierDeContenu&) = delete;
+    FichierDeContenu& operator=(const FichierDeContenu&) = delete;
+
+    void noterEchec(const char* quoi) const
+    {
+        noter("  %s : illisible (directement 0x%08lX, par l'archive 0x%08lX)\n", quoi,
+            static_cast<unsigned long>(direct), static_cast<unsigned long>(parArchive));
+    }
+};
+
 /// Nom du jeu dans son icône (SMDH) : français, anglais, japonais, puis les autres langues.
 bool lireNomDuJeu(u64 titre, FS_MediaType media, std::string& nom)
 {
     static const u32 cheminIcone[5] = {0, 0, 2, 0x6E6F6369 /* « icon » */, 0};
-    u32 cheminArchive[4] = {static_cast<u32>(titre), static_cast<u32>(titre >> 32), static_cast<u32>(media), 0};
-    Handle fichier;
-    if (R_FAILED(FSUSER_OpenFileDirectly(&fichier, ARCHIVE_SAVEDATA_AND_CONTENT,
-            FS_Path{PATH_BINARY, sizeof cheminArchive, cheminArchive},
-            FS_Path{PATH_BINARY, sizeof cheminIcone, cheminIcone}, FS_OPEN_READ, 0)))
+    FichierDeContenu icone(titre, media, cheminIcone, sizeof cheminIcone);
+    if (!icone.ouvert)
+    {
+        icone.noterEchec("icone");
         return false;
+    }
 
-    // En-tête (8 octets) puis 16 langues de 0x200 octets : nom court (0x40 caractères UTF-16), nom long, éditeur.
-    std::vector<u8> smdh(8 + 16 * 0x200);
+    // En-tête (8 octets) puis 16 langues de 0x200 octets : nom court (0x40 caractères UTF-16), nom long, éditeur ;
+    // puis les réglages et les images. Lue en entier (0x36C0 octets), comme Checkpoint et le Homebrew Launcher : une
+    // lecture partielle de ce fichier de contenu peut être refusée.
+    std::vector<u8> smdh(0x36C0);
     u32 lus = 0;
-    Result resultat = FSFILE_Read(fichier, &lus, 0, smdh.data(), smdh.size());
-    FSFILE_Close(fichier);
-    if (R_FAILED(resultat) || lus < smdh.size() || memcmp(smdh.data(), "SMDH", 4) != 0)
+    Result resultat = FSFILE_Read(icone.fichier, &lus, 0, smdh.data(), smdh.size());
+    if (R_FAILED(resultat) || lus < 8 + 16 * 0x200 || memcmp(smdh.data(), "SMDH", 4) != 0)
+    {
+        noter("  icone : ouverte, lecture 0x%08lX, %lu octets lus, debut %02X %02X %02X %02X\n",
+            static_cast<unsigned long>(resultat), static_cast<unsigned long>(lus), smdh[0], smdh[1], smdh[2], smdh[3]);
         return false;
+    }
 
     for (int langue : {2, 1, 0, 3, 4, 5, 6, 7, 8, 9, 10, 11})
     {
@@ -106,25 +211,349 @@ u64 tailleDansArchive(FS_Archive archive, const char* nom)
     return taille;
 }
 
-/// Console virtuelle d'une autre région que celles de JEUX : un nom en « Pokémon », hors des jeux annexes
-/// (Flipper, Trading Card Game)... puis une sauvegarde Game Boy de 32 Ko (estSauvegardeGameBoy). Le site revérifie.
-bool estNomPokemon(const std::string& nom)
+/// Contenu d'un fichier de la sauvegarde d'un jeu (au plus `tailleMax` octets) ; faux s'il n'existe pas ou dépasse.
+bool lireDansArchive(FS_Archive archive, const char* nom, std::vector<u8>& contenu, u64 tailleMax)
 {
-    auto simple = simplifier(nom);
-    bool pokemon = simple.find("pokemon") != std::string::npos || nom.find("ポケモン") != std::string::npos
-        || nom.find("포켓몬") != std::string::npos;
-    if (!pokemon)
+    Handle fichier;
+    if (R_FAILED(FSUSER_OpenFile(&fichier, archive, fsMakePath(PATH_ASCII, nom), FS_OPEN_READ, 0)))
         return false;
-    for (const char* annexe : {"pinball", "flipper", "card", "carte", "karten", "carta", "trading", "tcg"})
-        if (simple.find(annexe) != std::string::npos)
-            return false;
-    return nom.find("ピンボール") == std::string::npos && nom.find("カード") == std::string::npos;
+    u64 taille = 0;
+    bool ok = R_SUCCEEDED(FSFILE_GetSize(fichier, &taille)) && taille > 0 && taille <= tailleMax;
+    if (ok)
+    {
+        contenu.resize(taille);
+        u32 lus = 0;
+        ok = R_SUCCEEDED(FSFILE_Read(fichier, &lus, 0, contenu.data(), contenu.size())) && lus == contenu.size();
+    }
+    FSFILE_Close(fichier);
+    return ok;
 }
 
-bool estSauvegardeGameBoy(FS_Archive archive)
+/// Jeu d'une sauvegarde Pokémon Game Boy (« sav.dat » de 32 Ko de la Console virtuelle, officielle ou injectée), reconnu
+/// à son contenu comme le fait PKHeX : la liste de l'équipe (nombre de Pokémon, 6 au plus, puis 0xFF après le dernier)
+/// à sa place dans chaque version, internationale ou japonaise. Vérifié sur de vraies sauvegardes Rouge, Bleu et
+/// Argent (Noir et Rubis Oméga écartées). Nullptr si ce n'en est pas une.
+const char* jeuGameBoy(const std::vector<u8>& sauvegarde)
 {
-    auto taille = tailleDansArchive(archive, "/sav.dat");
-    return taille >= 0x8000 && taille <= 0x8100;
+    struct Liste
+    {
+        u32 position;
+        const char* jeu;
+    };
+    static const Liste LISTES[] = {
+        {0x2F2C, "Pokémon Rouge, Bleu ou Jaune"}, {0x2ED5, "Pokémon Rouge, Vert, Bleu ou Jaune"},
+        {0x288A, "Pokémon Or ou Argent"}, {0x283E, "Pokémon Or ou Argent"},
+        {0x2865, "Pokémon Cristal"}, {0x281A, "Pokémon Cristal"},
+    };
+    if (sauvegarde.size() < 0x8000 || sauvegarde.size() > 0x8100)
+        return nullptr;
+    for (const auto& liste : LISTES)
+    {
+        u8 nombre = sauvegarde[liste.position];
+        if (nombre <= 6 && sauvegarde[liste.position + 1 + nombre] == 0xFF)
+            return liste.jeu;
+    }
+    return nullptr;
+}
+
+// --- Jeux GBA injectés (Console virtuelle GBA faite maison, AGB_FIRM) ------------------------------------------------
+// Pas d'archive de sauvegarde ordinaire : la sauvegarde est un fichier spécial de l'archive « sauvegarde et contenu »
+// (chemin binaire 1, 1, 3), lu comme PKSM (titles/loader.cpp). Deux emplacements écrits à tour de rôle, chacun avec un
+// en-tête de 0x200 octets (« .SAV » en 0x00, nombre d'écritures en 0x34, taille : voir lireEnteteGba), suivi de la
+// sauvegarde GBA brute. PKSM vérifie aussi la signature (CMAC) de l'en-tête ; inutile ici, rien n'est réécrit.
+
+constexpr u32 ENTETE_GBA = 0x200;
+constexpr u32 SAUVEGARDE_GBA_MAX = 0x20000; // 128 Ko (puce flash des jeux Pokémon)
+
+/// Lecture d'un fichier à une position donnée ; vrai si exactement `taille` octets ont été lus.
+using Lecteur = std::function<bool(u64 position, void* sortie, u32 taille)>;
+
+/// Service PxiFS0 (accès bas niveau au système de fichiers) : seul chemin vers la sauvegarde d'un jeu GBA injecté, comme
+/// le fait PKSM (Archive::saveAndContents avec pxi). 0 s'il n'a pas pu être obtenu.
+Handle servicePxi = 0;
+bool servicePxiEssaye = false;
+
+/// Appel système de Luma3DS (luma.s) : copie de la connexion d'un autre processus à un service.
+extern "C" Result svcControlServiceLuma(u32 operation, Handle* sortie, const char* service);
+constexpr u32 SERVICEOP_STEAL_CLIENT_SESSION = 0;
+
+/// Luma3DS répond à svcGetSystemInfo(0x10000) (sa version) ; un autre noyau le refuse. Sans Luma, svc 0xB0 n'existe pas.
+bool lumaPresent()
+{
+    s64 version = 0;
+    return R_SUCCEEDED(svcGetSystemInfo(&version, 0x10000, 0));
+}
+
+Handle obtenirServicePxi()
+{
+    if (servicePxiEssaye)
+        return servicePxi;
+    servicePxiEssaye = true;
+    // Chaque service PXI n'accepte qu'une connexion, déjà prise par le processus FS du système (3dbrew, « PXI
+    // Services ») : une demande ordinaire est refusée (0xD0401834). Demandée sans attente, pour ne pas bloquer la console.
+    srvSetBlockingPolicy(true);
+    Result resultat = srvGetServiceHandle(&servicePxi, "PxiFS0");
+    srvSetBlockingPolicy(false);
+    if (R_SUCCEEDED(resultat))
+    {
+        noter("Service PxiFS0 (sauvegardes GBA) : ouvert.\n");
+        return servicePxi;
+    }
+    servicePxi = 0;
+    if (!lumaPresent())
+    {
+        noter("Service PxiFS0 (sauvegardes GBA) : refuse (0x%08lX), et pas de Luma3DS pour emprunter celui du systeme.\n",
+            static_cast<unsigned long>(resultat));
+        return 0;
+    }
+    // Luma3DS : on emprunte la connexion du système (lecture seule ici).
+    Result emprunt = svcControlServiceLuma(SERVICEOP_STEAL_CLIENT_SESSION, &servicePxi, "PxiFS0");
+    if (R_FAILED(emprunt))
+        servicePxi = 0;
+    noter("Service PxiFS0 (sauvegardes GBA) : refuse (0x%08lX), connexion du systeme %s (0x%08lX).\n",
+        static_cast<unsigned long>(resultat), servicePxi ? "empruntee" : "refusee", static_cast<unsigned long>(emprunt));
+    return servicePxi;
+}
+
+/// En-tête « .SAV » de l'emplacement à cette position : taille de la sauvegarde et nombre d'écritures (0x34) ; faux s'il
+/// est absent. La taille est déduite de celle du fichier (`tailleEmplacement`, deux emplacements identiques) ; sans elle,
+/// du champ de l'en-tête : 0x54 d'après 3dbrew (« AGB_FIRM »), 0x58 d'après la lecture de PKSM. Sur la console de
+/// l'utilisateur, 0x58 valait 0xFFFFFFFF : d'où la taille du fichier d'abord.
+bool lireEnteteGba(const Lecteur& lire, u64 position, u32 tailleEmplacement, u32& taille, u32& ecritures)
+{
+    u8 entete[ENTETE_GBA];
+    if (!lire(position, entete, sizeof entete) || memcmp(entete, ".SAV", 4) != 0)
+        return false;
+    u32 champ54, champ58;
+    memcpy(&ecritures, entete + 0x34, 4);
+    memcpy(&champ54, entete + 0x54, 4);
+    memcpy(&champ58, entete + 0x58, 4);
+    noter("  GBA : en-tete en 0x%llX : %lu ecritures, champ 0x54 = 0x%lX, champ 0x58 = 0x%lX\n", position,
+        static_cast<unsigned long>(ecritures), static_cast<unsigned long>(champ54), static_cast<unsigned long>(champ58));
+    auto valide = [](u32 valeur) { return valeur > 0 && valeur <= SAUVEGARDE_GBA_MAX; };
+    if (tailleEmplacement)
+        taille = tailleEmplacement;
+    else if (valide(champ54))
+        taille = champ54;
+    else if (valide(champ58))
+        taille = champ58;
+    else
+        return false;
+    return true;
+}
+
+/// Sauvegarde GBA brute de l'emplacement le plus récent, lue aux positions exactes comme PKSM (lire au-delà de la fin
+/// de ce fichier spécial peut échouer). `tailleFichier` : 0 si inconnue. Faux si le fichier n'a pas ce format.
+bool extraireSauvegardeGba(const Lecteur& lire, u64 tailleFichier, std::vector<u8>& sauvegarde)
+{
+    // Deux emplacements « en-tête de 0x200 octets + sauvegarde » : 0x40400 octets pour 128 Ko.
+    u32 emplacement = 0;
+    if (tailleFichier > 2 * ENTETE_GBA && (tailleFichier - 2 * ENTETE_GBA) % 2 == 0
+        && (tailleFichier - 2 * ENTETE_GBA) / 2 <= SAUVEGARDE_GBA_MAX)
+        emplacement = static_cast<u32>((tailleFichier - 2 * ENTETE_GBA) / 2);
+
+    u64 position = 0; // de l'en-tête choisi
+    u32 taille = 0, ecritures = 0;
+    bool trouve = false;
+    if (lireEnteteGba(lire, 0, emplacement, taille, ecritures))
+    {
+        trouve = true;
+        u32 taille2 = 0, ecritures2 = 0;
+        u64 second = ENTETE_GBA + taille;
+        bool deuxieme = lireEnteteGba(lire, second, emplacement, taille2, ecritures2);
+        if (deuxieme && ecritures2 == ecritures + 1) // écrit après le premier
+            position = second, taille = taille2;
+        noter("  GBA : emplacement %d choisi (0x%lX octets)\n", position ? 2 : 1, static_cast<unsigned long>(taille));
+    }
+    else if (emplacement) // premier emplacement jamais écrit : le second suit
+    {
+        trouve = lireEnteteGba(lire, ENTETE_GBA + emplacement, emplacement, taille, ecritures);
+        position = ENTETE_GBA + emplacement;
+        noter("  GBA : emplacement 1 vide, emplacement 2 %s\n", trouve ? "choisi" : "introuvable");
+    }
+    else // taille du fichier inconnue : le second est après une sauvegarde de taille inconnue
+    {
+        for (u32 essai = 0x400; essai <= SAUVEGARDE_GBA_MAX && !trouve; essai *= 2)
+            if (lireEnteteGba(lire, ENTETE_GBA + essai, 0, taille, ecritures))
+                trouve = true, position = ENTETE_GBA + essai;
+        noter("  GBA : emplacement 1 vide ou illisible, emplacement 2 %s\n", trouve ? "trouve" : "introuvable");
+    }
+    if (!trouve)
+        return false;
+    sauvegarde.resize(taille);
+    if (lire(position + ENTETE_GBA, sauvegarde.data(), taille))
+        return true;
+    noter("  GBA : lecture de la sauvegarde impossible\n");
+    return false;
+}
+
+/// Sauvegarde d'un jeu GBA injecté : fichier spécial (chemin binaire 1, 1, 3) de l'archive « sauvegarde et contenu »,
+/// ouvert par PxiFS0 comme PKSM (FSUSER le refuse : « argument invalide », 0xE0E046BE). Faux si le titre n'en a pas.
+bool lireSauvegardeGba(u64 titre, FS_MediaType media, std::vector<u8>& sauvegarde)
+{
+    static const u32 cheminSauvegarde[5] = {1, 1, 3, 0, 0};
+    u32 cheminArchive[4] = {static_cast<u32>(titre), static_cast<u32>(titre >> 32), static_cast<u32>(media), 0};
+    Handle pxi = obtenirServicePxi();
+    if (pxi)
+    {
+        FSPXI_Archive archive;
+        Result resultat = FSPXI_OpenArchive(pxi, &archive, ARCHIVE_SAVEDATA_AND_CONTENT,
+            FS_Path{PATH_BINARY, sizeof cheminArchive, cheminArchive});
+        if (R_FAILED(resultat))
+        {
+            noter("  GBA : archive refusee par PxiFS0 (0x%08lX)\n", static_cast<unsigned long>(resultat));
+            return false;
+        }
+        FSPXI_File fichier;
+        resultat = FSPXI_OpenFile(pxi, &fichier, archive, FS_Path{PATH_BINARY, sizeof cheminSauvegarde, cheminSauvegarde},
+            FS_OPEN_READ, 0);
+        bool ok = false;
+        if (R_SUCCEEDED(resultat))
+        {
+            // Pour le journal : taille du fichier et premiers octets (format attendu : « .SAV » en tête).
+            u64 tailleFichier = 0;
+            Result resultatTaille = FSPXI_GetFileSize(pxi, fichier, &tailleFichier);
+            u8 debut[16] = {};
+            u32 lusDebut = 0;
+            Result resultatLecture = FSPXI_ReadFile(pxi, fichier, &lusDebut, 0, debut, sizeof debut);
+            noter("  GBA : fichier de 0x%llX octets (0x%08lX), lecture 0x%08lX (%lu octets) :", tailleFichier,
+                static_cast<unsigned long>(resultatTaille), static_cast<unsigned long>(resultatLecture),
+                static_cast<unsigned long>(lusDebut));
+            for (u8 octet : debut)
+                noter(" %02X", octet);
+            noter("\n");
+
+            Lecteur lire = [&](u64 position, void* sortie, u32 taille) {
+                u32 lus = 0;
+                return R_SUCCEEDED(FSPXI_ReadFile(pxi, fichier, &lus, position, sortie, taille)) && lus == taille;
+            };
+            ok = extraireSauvegardeGba(lire, R_SUCCEEDED(resultatTaille) ? tailleFichier : 0, sauvegarde);
+            FSPXI_CloseFile(pxi, fichier);
+        }
+        else
+            noter("  GBA : pas de fichier de sauvegarde GBA (0x%08lX)\n", static_cast<unsigned long>(resultat));
+        FSPXI_CloseArchive(pxi, archive);
+        return ok;
+    }
+
+    // Sans PxiFS0 : essai par FSUSER (refusé jusqu'ici, gardé pour le journal).
+    FichierDeContenu contenu(titre, media, cheminSauvegarde, sizeof cheminSauvegarde);
+    if (!contenu.ouvert)
+    {
+        contenu.noterEchec("sauvegarde GBA");
+        return false;
+    }
+    Lecteur lire = [&](u64 position, void* sortie, u32 taille) {
+        u32 lus = 0;
+        return R_SUCCEEDED(FSFILE_Read(contenu.fichier, &lus, position, sortie, taille)) && lus == taille;
+    };
+    u64 tailleFichier = 0;
+    if (R_FAILED(FSFILE_GetSize(contenu.fichier, &tailleFichier)))
+        tailleFichier = 0;
+    return extraireSauvegardeGba(lire, tailleFichier, sauvegarde);
+}
+
+/// Sauvegarde de Rubis, Saphir, Émeraude, Rouge Feu ou Vert Feuille : des secteurs de 4 Ko terminés par la signature
+/// 0x08012025 (en 0xFF8). Ne dépend pas du nom donné au jeu injecté.
+bool estSauvegardePokemonGba(const std::vector<u8>& sauvegarde)
+{
+    for (size_t secteur = 0; secteur + 0x1000 <= sauvegarde.size(); secteur += 0x1000)
+    {
+        u32 signature;
+        memcpy(&signature, sauvegarde.data() + secteur + 0xFF8, 4);
+        if (signature == 0x08012025)
+            return true;
+    }
+    return false;
+}
+
+std::string cleDuTitre(u64 titre, FS_MediaType media)
+{
+    char cle[48];
+    snprintf(cle, sizeof cle, "titre:%016llX:%d", titre, static_cast<int>(media));
+    return cle;
+}
+
+/// Fichiers à la racine de la sauvegarde d'un jeu, pour le journal (« /sav.dat (32784) »).
+void noterFichiers(FS_Archive archive)
+{
+    Handle dossier;
+    if (R_FAILED(FSUSER_OpenDirectory(&dossier, archive, fsMakePath(PATH_ASCII, "/"))))
+        return;
+    FS_DirectoryEntry entrees[8];
+    u32 lues = 0;
+    noter("  fichiers :");
+    while (R_SUCCEEDED(FSDIR_Read(dossier, &lues, 8, entrees)) && lues > 0)
+        for (u32 i = 0; i < lues; i++)
+        {
+            u8 nom[0x110] = {};
+            utf16_to_utf8(nom, entrees[i].name, sizeof nom - 1);
+            noter(" /%s (%llu)", reinterpret_cast<char*>(nom), entrees[i].fileSize);
+        }
+    noter("\n");
+    FSDIR_Close(dossier);
+}
+
+/// Titre absent de JEUX : Console virtuelle Game Boy d'une autre région ou injectée (« sav.dat » reconnu à son
+/// contenu), sinon jeu GBA injecté (sauvegarde de 3e génération reconnue à son contenu, quel que soit son nom).
+void chercherJeuNonRepertorie(u64 titre, FS_MediaType media, std::vector<Sauvegarde>& trouvees)
+{
+    std::string nom;
+    bool nomLu = lireNomDuJeu(titre, media, nom);
+    noter("%016llX %s \"%s\"\n", titre, media == MEDIATYPE_GAME_CARD ? "cartouche" : "SD", nomLu ? nom.c_str() : "(nom illisible)");
+    Sauvegarde s;
+    s.titre = titre;
+    s.media = media;
+    s.cle = cleDuTitre(titre, media);
+
+    FS_Archive archive;
+    const char* jeuGb = nullptr;
+    if (ouvrirSauvegardeDuJeu(titre, media, archive))
+    {
+        noterFichiers(archive);
+        std::vector<u8> sav;
+        if (lireDansArchive(archive, "/sav.dat", sav, 0x8100))
+        {
+            jeuGb = jeuGameBoy(sav);
+            noter("  sav.dat : %s\n", jeuGb ? jeuGb : "pas une sauvegarde Pokemon Game Boy");
+        }
+        FSUSER_CloseArchive(archive);
+    }
+    else
+        noter("  pas de sauvegarde ordinaire\n");
+
+    bool gameBoy = jeuGb != nullptr;
+    if (gameBoy)
+    {
+        s.origine = Origine::ConsoleVirtuelle;
+        s.fichierInterne = "/sav.dat";
+        s.detail = "jeu installé, Game Boy (Console virtuelle), titre " + s.cle.substr(6, 16);
+        if (!nomLu)
+            nom = jeuGb;
+    }
+    else
+    {
+        // Pas un Game Boy Pokémon : peut-être un jeu GBA (certains ont aussi une sauvegarde ordinaire).
+        std::vector<u8> sauvegarde;
+        if (!lireSauvegardeGba(titre, media, sauvegarde))
+        {
+            noter("  -> ecarte\n");
+            return;
+        }
+        if (!estSauvegardePokemonGba(sauvegarde))
+        {
+            noter("  -> ecarte : sauvegarde GBA qui n'est pas de Pokemon (3e generation)\n");
+            return;
+        }
+        s.origine = Origine::JeuGBA;
+        s.detail = "jeu installé, GBA (injecté), titre " + s.cle.substr(6, 16);
+        if (!nomLu)
+            nom = "Jeu GBA " + s.cle.substr(6, 16);
+    }
+    noter("  -> retenu (%s)\n", gameBoy ? "Game Boy" : "GBA");
+    s.nom = nom;
+    s.fichier = nom + ".sav";
+    trouvees.push_back(s);
 }
 
 void chercherSurSupport(FS_MediaType media, std::vector<Sauvegarde>& trouvees)
@@ -143,19 +572,16 @@ void chercherSurSupport(FS_MediaType media, std::vector<Sauvegarde>& trouvees)
         if (static_cast<u32>(titre >> 32) != APPLICATION)
             continue;
         auto* connu = jeuConnu(titre);
-        std::string nom;
-        if (!connu && !(lireNomDuJeu(titre, media, nom) && estNomPokemon(nom)))
+        if (!connu)
+        {
+            chercherJeuNonRepertorie(titre, media, trouvees);
             continue;
+        }
 
         FS_Archive archive;
         if (!ouvrirSauvegardeDuJeu(titre, media, archive))
             continue; // pas encore de sauvegarde (jeu jamais lancé)
-        if (!connu && !estSauvegardeGameBoy(archive))
-        {
-            FSUSER_CloseArchive(archive);
-            continue;
-        }
-        bool consoleVirtuelle = connu ? connu->consoleVirtuelle : true;
+        bool consoleVirtuelle = connu->region != nullptr;
         const char* interne = consoleVirtuelle ? "/sav.dat" : "/main";
         bool present = tailleDansArchive(archive, interne) > 0;
         FSUSER_CloseArchive(archive);
@@ -167,13 +593,11 @@ void chercherSurSupport(FS_MediaType media, std::vector<Sauvegarde>& trouvees)
         s.titre = titre;
         s.media = media;
         s.fichierInterne = interne;
-        s.nom = connu ? connu->nom : nom;
+        s.nom = connu->nom;
         s.fichier = s.nom + ".sav";
-        char cle[48];
-        snprintf(cle, sizeof cle, "titre:%016llX:%d", titre, static_cast<int>(media));
-        s.cle = cle;
+        s.cle = cleDuTitre(titre, media);
         s.detail = std::string(media == MEDIATYPE_GAME_CARD ? "cartouche" : "jeu installé")
-            + (consoleVirtuelle ? ", Console virtuelle" : "");
+            + (consoleVirtuelle ? std::string(", Console virtuelle, version en ") + connu->region : "");
         trouvees.push_back(s);
     }
 }
@@ -309,10 +733,52 @@ std::string nomDeFichier(const std::string& chemin)
     return barre == std::string::npos ? chemin : chemin.substr(barre + 1);
 }
 
+/// « sdmc:/saves/x.sav » → « sdmc:/saves » ; « sdmc:/saves » → « sdmc:/ ».
+std::string dossierParent(const std::string& chemin)
+{
+    auto barre = chemin.rfind('/');
+    if (barre == std::string::npos)
+        return "";
+    auto parent = chemin.substr(0, barre);
+    return !parent.empty() && parent.back() == ':' ? parent + "/" : parent;
+}
+
+std::string joindre(const std::string& dossier, const std::string& nom)
+{
+    return !dossier.empty() && dossier.back() == '/' ? dossier + nom : dossier + "/" + nom;
+}
+
+/// ROM du même nom que la sauvegarde, dans son dossier ou celui du dessus : TWiLight Menu++ range les sauvegardes dans
+/// un dossier « saves » à côté des ROM (sdmc:/saves pour des ROM à la racine de la carte, sdmc:/roms/nds/saves...).
+std::string romVoisine(const std::string& sauvegarde, const std::string& base)
+{
+    auto dossier = dossierParent(sauvegarde);
+    for (const auto& lieu : {dossier, dossierParent(dossier)})
+    {
+        if (lieu.empty())
+            continue;
+        for (const char* ext : {".nds", ".dsi", ".srl", ".gba", ".gb", ".gbc"})
+        {
+            auto rom = joindre(lieu, base + ext);
+            struct stat infos;
+            if (stat(rom.c_str(), &infos) == 0 && S_ISREG(infos.st_mode))
+                return rom;
+        }
+    }
+    return "";
+}
+
 } // namespace
 
 void chercherJeux(std::vector<Sauvegarde>& trouvees)
 {
+    mkdir("sdmc:/3ds", 0777);
+    mkdir("sdmc:/3ds/PokeBankSync", 0777);
+    journal = fopen("sdmc:/3ds/PokeBankSync/diagnostic.txt", "w");
+    u64 programme = 0;
+    APT_GetProgramID(&programme);
+    noter("PokeBank Sync : jeux installes hors liste connue (identifiant, support, nom), derniere recherche.\n");
+    noter("Lance %s, titre %016llX.\n\n", envIsHomebrew() ? "en homebrew (.3dsx)" : "en CIA", programme);
     chercherSurSupport(MEDIATYPE_SD, trouvees);
 
     bool inseree = false;
@@ -320,6 +786,9 @@ void chercherJeux(std::vector<Sauvegarde>& trouvees)
     if (R_SUCCEEDED(FSUSER_CardSlotIsInserted(&inseree)) && inseree
         && R_SUCCEEDED(FSUSER_GetCardType(&type)) && type == CARD_CTR)
         chercherSurSupport(MEDIATYPE_GAME_CARD, trouvees);
+    if (journal)
+        fclose(journal);
+    journal = nullptr;
 }
 
 void chercherCarteSD(const std::vector<std::string>& dossiers, std::vector<Sauvegarde>& trouvees)
@@ -340,10 +809,11 @@ void chercherCarteSD(const std::vector<std::string>& dossiers, std::vector<Sauve
         auto fichier = nomDeFichier(chemin);
         auto base = sansExtension(fichier);
         Sauvegarde s;
-        auto rom = trouves.roms.find(minuscules(base));
-        if (rom != trouves.roms.end())
+        auto connue = trouves.roms.find(minuscules(base));
+        auto rom = connue != trouves.roms.end() ? connue->second : romVoisine(chemin, base);
+        if (!rom.empty())
         {
-            s.nom = jeuDeLaRom(rom->second);
+            s.nom = jeuDeLaRom(rom);
             if (s.nom.empty())
                 continue; // un autre jeu
             s.detail = chemin;
@@ -362,6 +832,14 @@ void chercherCarteSD(const std::vector<std::string>& dossiers, std::vector<Sauve
         s.cle = "sd:" + chemin;
         trouvees.push_back(s);
     }
+}
+
+void terminerJeux()
+{
+    if (servicePxi)
+        svcCloseHandle(servicePxi);
+    servicePxi = 0;
+    servicePxiEssaye = false;
 }
 
 bool lireSauvegarde(const Sauvegarde& sauvegarde, std::vector<u8>& contenu, std::string& erreur)
@@ -390,6 +868,14 @@ bool lireSauvegarde(const Sauvegarde& sauvegarde, std::vector<u8>& contenu, std:
         if (!ok)
             erreur = "Lecture impossible sur la carte SD.";
         return ok;
+    }
+
+    if (sauvegarde.origine == Origine::JeuGBA)
+    {
+        if (lireSauvegardeGba(sauvegarde.titre, sauvegarde.media, contenu))
+            return true;
+        erreur = "Lecture de la sauvegarde du jeu GBA impossible.";
+        return false;
     }
 
     FS_Archive archive;
