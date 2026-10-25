@@ -1,7 +1,5 @@
 #include "sauvegardes.hpp"
 
-#include "texte.hpp"
-
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
@@ -748,14 +746,16 @@ std::string joindre(const std::string& dossier, const std::string& nom)
     return !dossier.empty() && dossier.back() == '/' ? dossier + nom : dossier + "/" + nom;
 }
 
-/// ROM du même nom que la sauvegarde, dans son dossier ou celui du dessus : TWiLight Menu++ range les sauvegardes dans
-/// un dossier « saves » à côté des ROM (sdmc:/saves pour des ROM à la racine de la carte, sdmc:/roms/nds/saves...).
+/// ROM du même nom que la sauvegarde, dans son dossier, celui du dessus ou à la racine de la carte : TWiLight Menu++
+/// range les sauvegardes dans un dossier « saves » à côté des ROM (sdmc:/saves pour des ROM à la racine de la carte,
+/// sdmc:/roms/nds/saves...).
 std::string romVoisine(const std::string& sauvegarde, const std::string& base)
 {
     auto dossier = dossierParent(sauvegarde);
-    for (const auto& lieu : {dossier, dossierParent(dossier)})
+    auto parent = dossierParent(dossier);
+    for (const auto& lieu : {dossier, parent, std::string("sdmc:/")})
     {
-        if (lieu.empty())
+        if (lieu.empty() || (lieu == "sdmc:/" && (dossier == lieu || parent == lieu)))
             continue;
         for (const char* ext : {".nds", ".dsi", ".srl", ".gba", ".gb", ".gbc"})
         {
@@ -765,6 +765,118 @@ std::string romVoisine(const std::string& sauvegarde, const std::string& base)
                 return rom;
         }
     }
+    return "";
+}
+
+/// Contenu d'un fichier de la carte SD (au plus TAILLE_MAX octets) ; faux avec un message s'il ne peut pas être lu.
+bool lireFichierSD(const std::string& chemin, std::vector<u8>& contenu, std::string& erreur)
+{
+    FILE* f = fopen(chemin.c_str(), "rb");
+    if (!f)
+    {
+        erreur = "Fichier introuvable sur la carte SD.";
+        return false;
+    }
+    fseek(f, 0, SEEK_END);
+    long taille = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (taille <= 0 || static_cast<size_t>(taille) > TAILLE_MAX)
+    {
+        fclose(f);
+        erreur = "Fichier vide ou trop gros.";
+        return false;
+    }
+    contenu.resize(taille);
+    bool ok = fread(contenu.data(), 1, contenu.size(), f) == contenu.size();
+    fclose(f);
+    if (!ok)
+        erreur = "Lecture impossible sur la carte SD.";
+    return ok;
+}
+
+u32 lire32(const std::vector<u8>& donnees, size_t position)
+{
+    u32 valeur;
+    memcpy(&valeur, donnees.data() + position, 4);
+    return valeur;
+}
+
+/// CRC16-CCITT (valeur initiale 0xFFFF), somme de contrôle des sauvegardes de 5e génération.
+u16 crc16Ccitt(const u8* donnees, size_t taille)
+{
+    u16 crc = 0xFFFF;
+    for (size_t i = 0; i < taille; i++)
+    {
+        crc ^= static_cast<u16>(donnees[i] << 8);
+        for (int bit = 0; bit < 8; bit++)
+            crc = (crc & 0x8000) ? static_cast<u16>((crc << 1) ^ 0x1021) : static_cast<u16>(crc << 1);
+    }
+    return crc;
+}
+
+/// 4e génération (PKHeX : IsValidGeneralFooter2) : le bloc général se termine par sa taille (en -0xC) et la signature
+/// du kit de développement (en -0x8 : 0x20060623, ou 0x20070903 en coréen). Vérifié sur les deux copies de la
+/// sauvegarde (0 et 0x40000) : PKHeX ne regarde que la seconde, absente si le jeu n'a été sauvegardé qu'une fois.
+bool blocGeneral4Valide(const std::vector<u8>& sauvegarde, u32 tailleBloc)
+{
+    for (size_t copie : {size_t(0), size_t(0x40000)})
+    {
+        u32 taille = lire32(sauvegarde, copie + tailleBloc - 0xC);
+        u32 signature = lire32(sauvegarde, copie + tailleBloc - 0x8);
+        if (taille == tailleBloc && (signature == 0x20060623 || signature == 0x20070903))
+            return true;
+    }
+    return false;
+}
+
+/// 5e génération (PKHeX : IsValidFooter5) : bloc d'informations 0x100 octets avant la fin de la partie principale,
+/// suivi (0x10 octets plus loin) de sa somme CRC16.
+bool piedDePage5Valide(const std::vector<u8>& sauvegarde, size_t partiePrincipale, size_t tailleInfos)
+{
+    size_t debut = partiePrincipale - 0x100;
+    size_t fin = debut + tailleInfos + 0x10;
+    u16 attendu;
+    memcpy(&attendu, sauvegarde.data() + fin - 2, 2);
+    return attendu == crc16Ccitt(sauvegarde.data() + debut, tailleInfos);
+}
+
+/// Version d'une sauvegarde de 5e génération : octet du jeu dans les informations du dresseur (0x1941F ; numéros de
+/// PKHeX : 20 Blanc, 21 Noir, 22 Blanc 2, 23 Noir 2). Vérifié sur de vraies sauvegardes Noir et Noire 2.
+std::string versionGen5(const std::vector<u8>& sauvegarde, const char* paire)
+{
+    switch (sauvegarde[0x1941F])
+    {
+    case 20: return "Pokémon Blanc";
+    case 21: return "Pokémon Noir";
+    case 22: return "Pokémon Blanc 2";
+    case 23: return "Pokémon Noir 2";
+    default: return paire;
+    }
+}
+
+/// Jeu Pokémon principal reconnu au seul contenu de la sauvegarde, comme le fait PKHeX (SaveUtil, mêmes vérifications
+/// dans le même ordre pour les jeux DS) ; vide si ce n'en est pas un (Ranger, Donjon Mystère, autre jeu...). La 4e
+/// génération ne dit pas lequel des deux jeux d'une paire (Diamant ou Perle) : la ROM, si elle est là, le précise.
+std::string jeuDuContenu(const std::vector<u8>& sauvegarde)
+{
+    if (sauvegarde.size() == 0x80000)
+    {
+        if (blocGeneral4Valide(sauvegarde, 0xC100))
+            return "Pokémon Diamant ou Perle";
+        if (blocGeneral4Valide(sauvegarde, 0xCF2C))
+            return "Pokémon Platine";
+        if (blocGeneral4Valide(sauvegarde, 0xF628))
+            return "Pokémon Or HeartGold ou Argent SoulSilver";
+        if (piedDePage5Valide(sauvegarde, 0x24000, 0x8C))
+            return versionGen5(sauvegarde, "Pokémon Noir ou Blanc");
+        if (piedDePage5Valide(sauvegarde, 0x26000, 0x94))
+            return versionGen5(sauvegarde, "Pokémon Noir 2 ou Blanc 2");
+        return "";
+    }
+    if (sauvegarde.size() >= 0x10000 && sauvegarde.size() <= 0x20100 && estSauvegardePokemonGba(sauvegarde))
+        return "Pokémon 3e génération (GBA)";
+    if (const char* jeu = jeuGameBoy(sauvegarde))
+        return jeu;
     return "";
 }
 
@@ -806,26 +918,24 @@ void chercherCarteSD(const std::vector<std::string>& dossiers, std::vector<Sauve
 
     for (const auto& chemin : trouves.sauvegardes)
     {
+        // Le contenu décide si c'est un jeu Pokémon principal ; la ROM du même nom, si elle est là, donne la version
+        // exacte (Diamant plutôt que « Diamant ou Perle »). Une ROM d'un autre code (jeu modifié) ne l'emporte pas.
+        std::vector<u8> contenu;
+        std::string erreur;
+        if (!lireFichierSD(chemin, contenu, erreur))
+            continue;
+        auto jeu = jeuDuContenu(contenu);
+        if (jeu.empty())
+            continue;
         auto fichier = nomDeFichier(chemin);
         auto base = sansExtension(fichier);
-        Sauvegarde s;
         auto connue = trouves.roms.find(minuscules(base));
         auto rom = connue != trouves.roms.end() ? connue->second : romVoisine(chemin, base);
-        if (!rom.empty())
-        {
-            s.nom = jeuDeLaRom(rom);
-            if (s.nom.empty())
-                continue; // un autre jeu
-            s.detail = chemin;
-        }
-        else
-        {
-            auto simple = simplifier(base);
-            if (simple.find("pokemon") == std::string::npos && simple.find("pkmn") == std::string::npos)
-                continue;
-            s.nom = base;
-            s.detail = chemin + " (sans sa ROM : reconnue par son nom)";
-        }
+        auto exact = rom.empty() ? std::string() : jeuDeLaRom(rom);
+
+        Sauvegarde s;
+        s.nom = exact.empty() ? jeu : exact;
+        s.detail = exact.empty() ? chemin + " (version d'après la sauvegarde)" : chemin;
         s.origine = Origine::CarteSD;
         s.chemin = chemin;
         s.fichier = fichier;
@@ -846,29 +956,7 @@ bool lireSauvegarde(const Sauvegarde& sauvegarde, std::vector<u8>& contenu, std:
 {
     contenu.clear();
     if (sauvegarde.origine == Origine::CarteSD)
-    {
-        FILE* f = fopen(sauvegarde.chemin.c_str(), "rb");
-        if (!f)
-        {
-            erreur = "Fichier introuvable sur la carte SD.";
-            return false;
-        }
-        fseek(f, 0, SEEK_END);
-        long taille = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        if (taille <= 0 || static_cast<size_t>(taille) > TAILLE_MAX)
-        {
-            fclose(f);
-            erreur = "Fichier vide ou trop gros.";
-            return false;
-        }
-        contenu.resize(taille);
-        bool ok = fread(contenu.data(), 1, contenu.size(), f) == contenu.size();
-        fclose(f);
-        if (!ok)
-            erreur = "Lecture impossible sur la carte SD.";
-        return ok;
-    }
+        return lireFichierSD(sauvegarde.chemin, contenu, erreur);
 
     if (sauvegarde.origine == Origine::JeuGBA)
     {

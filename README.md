@@ -32,10 +32,11 @@ envoyer, **Y** relier au site (ou changer de site), **SELECT** chercher de nouve
 | Jeux 3DS installés ou sur cartouche : X, Y, Rubis Oméga, Saphir Alpha, Soleil, Lune, Ultra-Soleil, Ultra-Lune | Identifiant de titre (le même dans toutes les régions) ; fichier `main` de la sauvegarde du jeu | « Pokémon X.sav »... |
 | Console virtuelle (eShop ou injectée en CIA) : Rouge, Vert, Bleu, Jaune, Or, Argent, Cristal | Identifiant de titre de chaque version et langue (38 titres : japonais, anglais, allemand, français, espagnol, italien, coréen), qui donne la version exacte ; pour les jeux injectés, une sauvegarde `sav.dat` de 32 Ko reconnue **à son contenu**, comme le fait PKHeX (liste de l'équipe à sa place dans Rouge/Bleu/Jaune, Or/Argent ou Cristal, versions internationales et japonaises), quel que soit le nom du jeu | « Pokémon Rouge.sav »... ; jeu injecté : nom de son icône, sinon « Pokémon Or ou Argent.sav »... |
 | Jeux GBA injectés en CIA (AGB_FIRM) : Rubis, Saphir, Émeraude, Rouge Feu, Vert Feuille | Titre dont le fichier spécial de « sauvegarde et contenu » (ouvert par le service bas niveau `PxiFS0`, comme PKSM : `FSUSER` le refuse ; ce service n'accepte qu'une connexion, déjà prise par le système, empruntée grâce à un appel système de Luma3DS ; lu comme PKSM : deux emplacements avec un en-tête `.SAV` de 0x200 octets, le plus récent d'après son nombre d'écritures) contient une sauvegarde de 3e génération (signature `0x08012025` de ses secteurs) : **quel que soit le nom** donné au jeu | Nom du jeu + `.sav` |
-| Fichiers `.sav` de la carte SD (TWiLight Menu++...) | Dossiers de `config.ini`, sous-dossiers compris (6 niveaux). Gardé si la ROM du même nom (`.nds`, `.gba`, `.gb`...), cherchée dans ces dossiers, puis dans le dossier de la sauvegarde et celui du dessus (TWiLight : `sdmc:/saves/X.sav` pour `sdmc:/X.nds`), est un jeu Pokémon principal (code du jeu dans son en-tête : Diamant à Blanc 2, Rubis à Vert Feuille, Rouge à Cristal) ; sans ROM, si son nom contient « pokemon » ou « pkmn » | Nom du fichier |
+| Fichiers `.sav` de la carte SD (TWiLight Menu++...) | Dossiers de `config.ini`, sous-dossiers compris (6 niveaux). **Reconnu à son contenu, sans ROM**, avec les vérifications de PKHeX (`SaveUtil`) : 4e génération (512 Ko, fin du bloc général à sa taille avec la signature 0x20060623 ou 0x20070903 : Diamant/Perle 0xC100, Platine 0xCF2C, HeartGold/SoulSilver 0xF628), 5e génération (512 Ko, CRC16 du bloc d'informations : Noir/Blanc, Noir 2/Blanc 2, version exacte lue en 0x1941F), 3e génération (secteurs signés 0x08012025), 1re et 2e génération (liste de l'équipe). La ROM du même nom (`.nds`, `.gba`, `.gb`...), cherchée dans ces dossiers, le dossier de la sauvegarde, celui du dessus et la racine de la carte (TWiLight : `sdmc:/saves/X.sav` pour `sdmc:/X.nds`), ne sert qu'à nommer la version exacte (Diamant plutôt que « Diamant ou Perle ») | Nom du fichier |
 
-Les jeux annexes (Ranger, Donjon Mystère, Conquest...) sont écartés grâce au code de leur ROM, même avec « Pokémon »
-dans le nom. Les cartouches DS ne sont pas lues. Le site revérifie tout avec PKHeX : un fichier qui n'est pas une sauvegarde Pokémon
+Les jeux annexes (Ranger, Donjon Mystère, Conquest...) sont écartés : leur sauvegarde n'a pas la structure d'un jeu
+principal, même avec « Pokémon » dans le nom. Vérifié sur de vraies sauvegardes (SoulSilver, Noire 2, Noir, Platine,
+Ranger écartée) et sur des fichiers de zéros ou au hasard. Les cartouches DS ne sont pas lues. Le site revérifie tout avec PKHeX : un fichier qui n'est pas une sauvegarde Pokémon
 est refusé.
 
 Une même partie trouvée à plusieurs endroits (cartouche et copie sur la SD) est envoyée plusieurs fois : le site garde la
@@ -83,7 +84,7 @@ le Homebrew Launcher, puis `3dslink PokeBankSync.3dsx` (outils de devkitPro).
 | Fichier | Rôle |
 |---|---|
 | `source/main.cpp` | Écrans (liste en haut, détail et touches en bas), boucle principale, liaison, envoi |
-| `source/sauvegardes.cpp` | Recherche des sauvegardes : jeux 3DS et Console virtuelle (identifiants de titre, nom de l'icône SMDH, archive de sauvegarde), jeux GBA injectés (format AGB_FIRM), fichiers `.sav` de la carte SD (en-tête des ROM) ; lecture |
+| `source/sauvegardes.cpp` | Recherche des sauvegardes : jeux 3DS et Console virtuelle (identifiants de titre, nom de l'icône SMDH, archive de sauvegarde), jeux GBA injectés (format AGB_FIRM), fichiers `.sav` de la carte SD (reconnus à leur contenu comme PKHeX, ROM pour le nom exact) ; lecture |
 | `source/luma.s` | Appel système de Luma3DS `svcControlService` (svc 0xB0), pour emprunter la connexion du système à `PxiFS0` |
 | `source/site.cpp` | API du site (`/api/sync/liaison`, `/compte`, `/sauvegardes`) en HTTPS, messages d'erreur réseau |
 | `source/envois.cpp` | Empreintes des derniers envois (`envois.txt`), SHA-256 |
@@ -101,6 +102,7 @@ le Homebrew Launcher, puis `3dslink PokeBankSync.3dsx` (outils de devkitPro).
 | [Jansson](https://github.com/akheron/jansson) (paquet `3ds-jansson`) | JSON du site | MIT |
 | [zlib](https://zlib.net) (paquet `3ds-zlib`) | Dépendance de libcurl | zlib |
 | [List of Pokémon titles for Nintendo 3DS](https://gist.github.com/Bl4ckSh4rk/256ed3b857c9677310837d5180121f35) (Bl4ckSh4rk) | Identifiants de titre de la Console virtuelle, par version et par langue (`JEUX` dans `sauvegardes.cpp`) | Données publiées (gist) |
+| [PKHeX](https://github.com/kwsch/PKHeX) (Kaphotics et contributeurs) | Règles de reconnaissance des sauvegardes à leur contenu (`SaveUtil` : blocs de 4e génération, CRC16 de 5e génération, listes de l'équipe de 1re et 2e génération), numéros de version de 5e génération | GPL-3.0 |
 | [PKSM](https://github.com/FlagBrew/PKSM) (FlagBrew) | Identifiants de titre des jeux 3DS et de la Console virtuelle (recoupés), codes des jeux DS, fichiers `main` / `sav.dat` des sauvegardes, format des sauvegardes GBA injectées (`titles/loader.cpp`) | GPL-3.0 |
 | [Checkpoint](https://github.com/FlagBrew/Checkpoint) (FlagBrew) | Méthode de lecture de l'icône (SMDH) et de l'archive de sauvegarde d'un titre | GPL-3.0 |
 | ISRG (Let's Encrypt), Sectigo (USERTrust) | Certificats racines de `data/racines.pem` | Certificats publics |

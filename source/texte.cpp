@@ -8,23 +8,22 @@ struct Correspondance
 {
     char32_t point;      // caractère Unicode
     const char* police;  // octets de la police de la console
-    const char* simple;  // sans accent, en minuscules (simplifier)
 };
 
 // Lettres accentuées du français (et quelques autres) présentes dans la page de code 437 ; ponctuation remplacée.
 const Correspondance TABLE[] = {
-    {U'é', "\x82", "e"}, {U'è', "\x8A", "e"}, {U'ê', "\x88", "e"}, {U'ë', "\x89", "e"}, {U'É', "\x90", "e"},
-    {U'È', "E", "e"},    {U'Ê', "E", "e"},    {U'Ë', "E", "e"},
-    {U'à', "\x85", "a"}, {U'â', "\x83", "a"}, {U'ä', "\x84", "a"}, {U'á', "\xA0", "a"}, {U'å', "\x86", "a"},
-    {U'À', "A", "a"},    {U'Â', "A", "a"},    {U'Ä', "\x8E", "a"}, {U'Å', "\x8F", "a"},
-    {U'î', "\x8C", "i"}, {U'ï', "\x8B", "i"}, {U'í', "\xA1", "i"}, {U'ì', "\x8D", "i"}, {U'Î', "I", "i"}, {U'Ï', "I", "i"},
-    {U'ô', "\x93", "o"}, {U'ö', "\x94", "o"}, {U'ó', "\xA2", "o"}, {U'ò', "\x95", "o"}, {U'Ô', "O", "o"}, {U'Ö', "\x99", "o"},
-    {U'û', "\x96", "u"}, {U'ù', "\x97", "u"}, {U'ü', "\x81", "u"}, {U'ú', "\xA3", "u"}, {U'Û', "U", "u"}, {U'Ù', "U", "u"}, {U'Ü', "\x9A", "u"},
-    {U'ç', "\x87", "c"}, {U'Ç', "\x80", "c"}, {U'ñ', "\xA4", "n"}, {U'Ñ', "\xA5", "n"}, {U'ÿ', "\x98", "y"}, {U'ß', "\xE1", "ss"},
-    {U'œ', "oe", "oe"},  {U'Œ', "OE", "oe"},  {U'æ', "\x91", "ae"}, {U'Æ', "\x92", "ae"},
-    {U'«', "\xAE", "\""}, {U'»', "\xAF", "\""}, {U'’', "'", "'"}, {U'‘', "'", "'"}, {U'“', "\"", "\""}, {U'”', "\"", "\""},
-    {U'—', "-", "-"},    {U'–', "-", "-"},    {U'…', "...", "..."}, {U'·', "\xFA", "."}, {U'×', "x", "x"},
-    {U'→', "->", "->"},  {U'₽', "P", "p"},    {U'°', "\xF8", ""},   {U' ', " ", " "}, {U' ', " ", " "},
+    {U'é', "\x82"}, {U'è', "\x8A"}, {U'ê', "\x88"}, {U'ë', "\x89"}, {U'É', "\x90"},
+    {U'È', "E"},    {U'Ê', "E"},    {U'Ë', "E"},
+    {U'à', "\x85"}, {U'â', "\x83"}, {U'ä', "\x84"}, {U'á', "\xA0"}, {U'å', "\x86"},
+    {U'À', "A"},    {U'Â', "A"},    {U'Ä', "\x8E"}, {U'Å', "\x8F"},
+    {U'î', "\x8C"}, {U'ï', "\x8B"}, {U'í', "\xA1"}, {U'ì', "\x8D"}, {U'Î', "I"}, {U'Ï', "I"},
+    {U'ô', "\x93"}, {U'ö', "\x94"}, {U'ó', "\xA2"}, {U'ò', "\x95"}, {U'Ô', "O"}, {U'Ö', "\x99"},
+    {U'û', "\x96"}, {U'ù', "\x97"}, {U'ü', "\x81"}, {U'ú', "\xA3"}, {U'Û', "U"}, {U'Ù', "U"}, {U'Ü', "\x9A"},
+    {U'ç', "\x87"}, {U'Ç', "\x80"}, {U'ñ', "\xA4"}, {U'Ñ', "\xA5"}, {U'ÿ', "\x98"}, {U'ß', "\xE1"},
+    {U'œ', "oe"},  {U'Œ', "OE"},  {U'æ', "\x91"}, {U'Æ', "\x92"},
+    {U'«', "\xAE"}, {U'»', "\xAF"}, {U'’', "'"}, {U'‘', "'"}, {U'“', "\""}, {U'”', "\""},
+    {U'—', "-"},    {U'–', "-"},    {U'…', "..."}, {U'·', "\xFA"}, {U'×', "x"},
+    {U'→', "->"},  {U'₽', "P"},    {U'°', "\xF8"},   {U' ', " "}, {U' ', " "},
 };
 
 const Correspondance* chercher(char32_t c)
@@ -109,18 +108,4 @@ std::string ajuster(const std::string& console, int largeur)
     if (static_cast<int>(console.size()) <= largeur)
         return console + std::string(largeur - console.size(), ' ');
     return console.substr(0, largeur - 3) + "...";
-}
-
-std::string simplifier(const std::string& utf8)
-{
-    std::string sortie;
-    for (size_t i = 0; i < utf8.size();)
-    {
-        char32_t c = lire(utf8, i);
-        if (c < 0x80)
-            sortie += static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
-        else if (auto* entree = chercher(c))
-            sortie += entree->simple;
-    }
-    return sortie;
 }

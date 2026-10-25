@@ -16,5 +16,3 @@ std::vector<std::string> couper(const std::string& console, int largeur);
 /// Texte déjà converti, raccourci à `largeur` cases (« ... » à la fin) ou complété par des espaces.
 std::string ajuster(const std::string& console, int largeur);
 
-/// Minuscules ASCII, accents retirés (é → e) : pour chercher « pokemon » dans un nom.
-std::string simplifier(const std::string& utf8);
