@@ -3,7 +3,8 @@
 Homebrew 3DS qui cherche les sauvegardes Pokémon de la console et les envoie au site **PokeBank**
 (dépôt `MonstersUniverse`), où elles deviennent des **sauvegardes stockées** : une partie nouvelle est ajoutée, une partie
 déjà stockée par ce compte est mise à jour, avec les règles de « Mes sauvegardes » (voir le README du site, « Synchronisation
-depuis une 3DS »). Envoi seulement : rien n'est jamais écrit dans les sauvegardes de la console.
+depuis une 3DS »). Dans l'autre sens, **« Récupérer »** remet sur la console la version du site (sauvegardes DS pour
+l'instant ; 3DS, GBA et Game Boy viendront ensuite), après une copie de celle de la console.
 
 - **Console** : 3DS avec un firmware modifié (Luma3DS) et le Homebrew Launcher.
 - **Stack** : C++17, libctru (devkitARM), libcurl + mbedTLS (HTTPS), jansson (JSON). Interface en mode texte sur les deux
@@ -23,7 +24,37 @@ depuis une 3DS »). Envoi seulement : rien n'est jamais écrit dans les sauvegar
    temps de jeu que la version stockée, partie modifiée sur le serveur à télécharger d'abord, partie d'un autre compte...).
 
 Touches : flèches haut/bas (gauche/droite : page entière), **A** cocher, **R** tout cocher, **L** tout décocher, **X**
-envoyer, **Y** relier au site (ou changer de site), **SELECT** chercher de nouveau, **START** quitter.
+envoyer, **Y** relier au site (ou changer de site), **SELECT** chercher de nouveau, **B** récupérer, **START** quitter.
+
+### Récupérer (touche B)
+
+La liste montre les sauvegardes stockées sur le site (« Jeu — Dresseur ») et ce que la console en ferait :
+
+| État | Signification |
+|---|---|
+| **à récupérer** | Une sauvegarde de la même partie est sur la console, et le site dit qu'elle peut être remplacée : moins de temps de jeu sur la console, ou même temps de jeu mais modifiée par le site (retrait d'argent, transfert d'objets). Cochée d'office seulement dans ce second cas. |
+| **à placer** | Pas encore sur la console : sera écrite à côté d'une ROM du même jeu qui n'a pas de sauvegarde. Jamais cochée d'office. |
+| **à jour** | Identique sur la console et sur le site. |
+| **refusée** | Le site refuse : la console a **plus de temps de jeu** (sa progression serait perdue : envoie-la plutôt) ou c'est **une autre partie** (autre dresseur) au même endroit. |
+| **pas de ROM** | Aucune ROM de ce jeu sans sauvegarde sur la carte SD. |
+| **plus tard** | Sauvegarde 3DS, GBA ou Game Boy : pas encore récupérable. |
+
+**X** récupère les sauvegardes cochées, **B** revient à l'envoi (la liste est refaite : les sauvegardes écrites y sont
+« envoyées »), **SELECT** relit la liste du site.
+
+- **Où** (sauvegardes DS, TWiLight Menu++) : l'emplacement noté par le site lors du dernier envoi ou de la dernière
+  récupération depuis cette console ; sinon une sauvegarde de la carte SD du même nom de fichier ; sinon
+  `<dossier de la ROM>/saves/<nom de la ROM>.sav` (ou à côté de la ROM si TWiLight y range déjà ses sauvegardes) pour une
+  ROM du même jeu (code de son en-tête ; en 4e génération la sauvegarde ne distingue pas Diamant de Perle ni HeartGold de
+  SoulSilver : l'une ou l'autre convient), de préférence celle du même nom. ROM cherchées dans les dossiers de `config.ini`
+  et à la racine de la carte (`sdmc:/X.nds` → `sdmc:/saves/X.sav`).
+- **Avant d'écraser** : copie de la sauvegarde de la console dans `sdmc:/3ds/PokeBankSync/copies/<date>_<fichier>` (rien
+  n'est écrit si la copie échoue) ; la version du site est écrite dans un fichier `.tmp`, qui ne remplace l'ancienne
+  qu'une fois complet, après vérification de son empreinte SHA-256 (celle annoncée par la liste).
+- Le site compare les deux versions avec PKHeX (même partie, temps de jeu) : la console ne sait pas lire le temps de jeu.
+- Une récupération vaut « Télécharger » sur le site : le blocage de « Mettre à jour » après un retrait est levé.
+- Cas sans issue pour l'instant : tu as joué sur la console **après** une modification du site sans la récupérer
+  (envoi refusé, récupération aussi).
 
 ## Sauvegardes cherchées
 
@@ -50,6 +81,7 @@ Dans `sdmc:/3ds/PokeBankSync/` :
   `dossier=` par dossier à parcourir. Sans ligne `dossier=` : `sdmc:/saves` et `sdmc:/roms` (TWiLight Menu++ : dossier
   `saves` à côté des ROM, à la racine ou dans `roms/nds`...). La liste de la première version (`sdmc:/roms`,
   `sdmc:/3ds/open_agb_firm`, `sdmc:/3ds/mGBA`), écrite d'office à la liaison, est remplacée par celle-ci.
+- `copies/` : copie datée de chaque sauvegarde de la console avant qu'une récupération ne la remplace.
 - `envois.txt` : empreinte SHA-256 et nom de fichier de la dernière version envoyée de chaque sauvegarde (état « envoyée » ;
   un nom qui change, version exacte enfin reconnue, la rend « modifiée » et le site renomme la sauvegarde stockée). Vidé quand la
   console est reliée à un autre site ou un autre compte.
@@ -83,10 +115,10 @@ le Homebrew Launcher, puis `3dslink PokeBankSync.3dsx` (outils de devkitPro).
 
 | Fichier | Rôle |
 |---|---|
-| `source/main.cpp` | Écrans (liste en haut, détail et touches en bas), boucle principale, liaison, envoi |
-| `source/sauvegardes.cpp` | Recherche des sauvegardes : jeux 3DS et Console virtuelle (identifiants de titre, nom de l'icône SMDH, archive de sauvegarde), jeux GBA injectés (format AGB_FIRM), fichiers `.sav` de la carte SD (reconnus à leur contenu comme PKHeX, ROM pour le nom exact) ; lecture |
+| `source/main.cpp` | Écrans (liste en haut, détail et touches en bas), boucle principale, liaison, envoi, « Récupérer » (destination, comparaison, récupération) |
+| `source/sauvegardes.cpp` | Recherche des sauvegardes : jeux 3DS et Console virtuelle (identifiants de titre, nom de l'icône SMDH, archive de sauvegarde), jeux GBA injectés (format AGB_FIRM), fichiers `.sav` de la carte SD (reconnus à leur contenu comme PKHeX, ROM pour le nom exact) ; lecture ; ROM DS et emplacement des sauvegardes de TWiLight Menu++, écriture sûre (copie, fichier temporaire) |
 | `source/luma.s` | Appel système de Luma3DS `svcControlService` (svc 0xB0), pour emprunter la connexion du système à `PxiFS0` |
-| `source/site.cpp` | API du site (`/api/sync/liaison`, `/compte`, `/sauvegardes`) en HTTPS, messages d'erreur réseau |
+| `source/site.cpp` | API du site (`/api/sync/liaison`, `/compte`, `/sauvegardes` : envoi, liste, comparaison, téléchargement) en HTTPS, messages d'erreur réseau |
 | `source/envois.cpp` | Empreintes des derniers envois (`envois.txt`), SHA-256 |
 | `source/config.cpp` | `config.ini` : site, jeton, dossiers |
 | `source/texte.cpp` | UTF-8 → police de la console (page de code 437 : é, à, «...), découpage en lignes |

@@ -1,9 +1,12 @@
 #include "sauvegardes.hpp"
 
+#include "config.hpp"
+
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <dirent.h>
 #include <functional>
 #include <map>
@@ -989,4 +992,157 @@ bool lireSauvegarde(const Sauvegarde& sauvegarde, std::vector<u8>& contenu, std:
     if (!ok)
         erreur = "Lecture de la sauvegarde du jeu impossible.";
     return ok;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Récupération : ROM DS, emplacement des sauvegardes de TWiLight Menu++, écriture sûre
+// ---------------------------------------------------------------------------------------------------------------------
+
+bool fichierExiste(const std::string& chemin)
+{
+    struct stat infos;
+    return stat(chemin.c_str(), &infos) == 0 && S_ISREG(infos.st_mode);
+}
+
+namespace {
+
+/// Sauvegarde que TWiLight Menu++ associe à cette ROM : dans le dossier « saves » à côté d'elle (réglage par défaut),
+/// ou à côté d'elle si elle y est déjà. Pour des ROM à la racine : sdmc:/saves/<nom de la ROM>.sav.
+std::string emplacementTwilight(const std::string& rom)
+{
+    auto dossier = dossierParent(rom);
+    auto nom = sansExtension(nomDeFichier(rom)) + ".sav";
+    auto dansSaves = joindre(joindre(dossier, "saves"), nom);
+    auto aCote = joindre(dossier, nom);
+    if (!fichierExiste(dansSaves) && fichierExiste(aCote))
+        return aCote;
+    return dansSaves;
+}
+
+bool estRomDs(const std::string& ext)
+{
+    return ext == ".nds" || ext == ".dsi" || ext == ".srl";
+}
+
+/// Écrit le fichier en entier ; faux s'il n'a pas la bonne taille à la fin.
+bool ecrireFichier(const std::string& chemin, const std::vector<u8>& contenu)
+{
+    FILE* f = fopen(chemin.c_str(), "wb");
+    if (!f)
+        return false;
+    bool ok = fwrite(contenu.data(), 1, contenu.size(), f) == contenu.size();
+    ok = fclose(f) == 0 && ok;
+    struct stat infos;
+    return ok && stat(chemin.c_str(), &infos) == 0 && static_cast<size_t>(infos.st_size) == contenu.size();
+}
+
+} // namespace
+
+std::vector<RomDs> chercherRomsDs(const std::vector<std::string>& dossiers)
+{
+    Trouves trouves;
+    for (auto dossier : dossiers)
+    {
+        while (dossier.size() > 1 && dossier.back() == '/')
+            dossier.pop_back();
+        parcourir(dossier, 0, trouves);
+    }
+    // Racine de la carte, sans ses sous-dossiers : TWiLight Menu++ y lit les ROM posées là (sauvegardes dans sdmc:/saves).
+    if (DIR* d = opendir("sdmc:/"))
+    {
+        while (dirent* entree = readdir(d))
+        {
+            std::string nom = entree->d_name;
+            if (nom.empty() || nom[0] == '.' || !estRomDs(extension(nom)))
+                continue;
+            auto chemin = joindre("sdmc:/", nom);
+            if (fichierExiste(chemin))
+                trouves.roms.emplace(minuscules(sansExtension(nom)), chemin);
+        }
+        closedir(d);
+    }
+
+    std::vector<RomDs> roms;
+    for (const auto& [base, chemin] : trouves.roms)
+    {
+        char code[5] = {};
+        if (!estRomDs(extension(chemin)) || !lireOctets(chemin, 0x0C, code, 4))
+            continue;
+        roms.push_back(RomDs{chemin, std::string(code, 3), emplacementTwilight(chemin)});
+    }
+    return roms;
+}
+
+std::vector<std::string> codesPourFamille(const std::string& famille)
+{
+    if (famille == "DP")
+        return {"ADA", "APA"}; // la sauvegarde ne dit pas lequel des deux
+    if (famille == "Pt")
+        return {"CPU"};
+    if (famille == "HGSS")
+        return {"IPK", "IPG"};
+    if (famille == "B")
+        return {"IRB"};
+    if (famille == "W")
+        return {"IRA"};
+    if (famille == "BW")
+        return {"IRB", "IRA"};
+    if (famille == "B2")
+        return {"IRE"};
+    if (famille == "W2")
+        return {"IRD"};
+    if (famille == "B2W2")
+        return {"IRE", "IRD"};
+    return {};
+}
+
+bool ecrireSauvegardeSD(const std::string& chemin, const std::vector<u8>& contenu, std::string& message)
+{
+    bool existe = fichierExiste(chemin);
+    if (existe)
+    {
+        // Copie de sécurité de la sauvegarde de la console, datée, avant tout remplacement.
+        mkdir("sdmc:/3ds", 0777);
+        mkdir(DOSSIER_APPLI, 0777);
+        auto copies = std::string(DOSSIER_APPLI) + "/copies";
+        mkdir(copies.c_str(), 0777);
+        time_t maintenant = time(nullptr);
+        char date[32];
+        strftime(date, sizeof date, "%Y%m%d-%H%M%S", localtime(&maintenant));
+        auto copie = copies + "/" + date + "_" + nomDeFichier(chemin);
+        std::vector<u8> ancienne;
+        std::string erreur;
+        if (!lireFichierSD(chemin, ancienne, erreur) || !ecrireFichier(copie, ancienne))
+        {
+            message = "Copie de sécurité impossible (" + copie + ") : rien n'a été écrit.";
+            return false;
+        }
+        message = "Ancienne sauvegarde copiée dans " + copie + ".";
+    }
+    else
+    {
+        mkdir(dossierParent(chemin).c_str(), 0777); // « saves » à côté de la ROM, s'il n'existe pas encore
+        message.clear();
+    }
+
+    auto temporaire = chemin + ".tmp";
+    if (!ecrireFichier(temporaire, contenu))
+    {
+        remove(temporaire.c_str());
+        message = "Écriture impossible sur la carte SD (pleine ou protégée ?) : rien n'a été remplacé.";
+        return false;
+    }
+    if (existe && remove(chemin.c_str()) != 0)
+    {
+        remove(temporaire.c_str());
+        message = "L'ancienne sauvegarde n'a pas pu être remplacée : rien n'a changé.";
+        return false;
+    }
+    if (rename(temporaire.c_str(), chemin.c_str()) != 0)
+    {
+        message = "Renommage impossible : la sauvegarde du site est dans " + temporaire
+            + (existe ? ", l'ancienne dans le dossier copies." : ".");
+        return false;
+    }
+    return true;
 }

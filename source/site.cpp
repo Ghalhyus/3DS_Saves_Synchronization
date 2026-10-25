@@ -118,7 +118,9 @@ std::string champ(json_t* racine, const char* nom)
 }
 
 /// Message d'une réponse : celui du site s'il y en a un, sinon une explication selon le statut HTTP.
-std::string messageDe(const Reponse& reponse, json_t* json)
+/// `recuperation` : route de « Récupérer », absente d'un site qui n'a pas encore été mis à jour (l'ancienne version
+/// répond 405 à GET /api/sync/sauvegardes, qu'elle ne connaît qu'en POST, et 404 aux autres).
+std::string messageDe(const Reponse& reponse, json_t* json, bool recuperation = false)
 {
     if (!reponse.erreur.empty())
         return reponse.erreur;
@@ -126,7 +128,9 @@ std::string messageDe(const Reponse& reponse, json_t* json)
     if (!message.empty())
         return message;
     char texte[160];
-    if (reponse.code == 404 || !json)
+    if (reponse.code == 405 || (recuperation && reponse.code == 404))
+        snprintf(texte, sizeof texte, "Le site n'a pas encore cette fonction (HTTP %ld) : publie sa dernière version, puis réessaie.", reponse.code);
+    else if (reponse.code == 404 || !json)
         snprintf(texte, sizeof texte, "Ce site ne répond pas comme PokeBank (HTTP %ld) : vérifie son adresse (touche Y).", reponse.code);
     else
         snprintf(texte, sizeof texte, "Réponse inattendue du site (HTTP %ld).", reponse.code);
@@ -134,6 +138,27 @@ std::string messageDe(const Reponse& reponse, json_t* json)
 }
 
 std::string autorisation(const std::string& jeton) { return "Authorization: Bearer " + jeton; }
+
+/// Texte encodé pour une adresse (paramètre « fichier= » ou « cle= »).
+std::string encoder(const std::string& texte)
+{
+    char* encode = curl_easy_escape(nullptr, texte.c_str(), static_cast<int>(texte.size()));
+    std::string resultat = encode ? encode : "";
+    curl_free(encode);
+    return resultat;
+}
+
+int entier(json_t* racine, const char* nom)
+{
+    json_t* valeur = racine ? json_object_get(racine, nom) : nullptr;
+    return json_is_integer(valeur) ? static_cast<int>(json_integer_value(valeur)) : 0;
+}
+
+bool booleen(json_t* racine, const char* nom)
+{
+    json_t* valeur = racine ? json_object_get(racine, nom) : nullptr;
+    return json_is_true(valeur);
+}
 
 } // namespace
 
@@ -232,12 +257,11 @@ ResultatCompte verifierCompte(const std::string& site, const std::string& jeton)
     return resultat;
 }
 
-ResultatEnvoi envoyer(const std::string& site, const std::string& jeton, const std::string& fichier, const std::vector<u8>& contenu)
+ResultatEnvoi envoyer(const std::string& site, const std::string& jeton, const std::string& fichier, const std::string& cle,
+    const std::vector<u8>& contenu)
 {
     ResultatEnvoi resultat;
-    char* nom = curl_easy_escape(nullptr, fichier.c_str(), static_cast<int>(fichier.size()));
-    std::string url = site + "/api/sync/sauvegardes?fichier=" + (nom ? nom : "sauvegarde.sav");
-    curl_free(nom);
+    std::string url = site + "/api/sync/sauvegardes?fichier=" + encoder(fichier) + "&cle=" + encoder(cle);
 
     auto reponse = requete(url, {autorisation(jeton), "Content-Type: application/octet-stream"},
         contenu.data(), contenu.size(), true);
@@ -256,5 +280,85 @@ ResultatEnvoi envoyer(const std::string& site, const std::string& jeton, const s
     resultat.message = messageDe(reponse, json);
     if (json)
         json_decref(json);
+    return resultat;
+}
+
+ResultatListe listerSauvegardesSite(const std::string& site, const std::string& jeton)
+{
+    ResultatListe resultat;
+    auto reponse = requete(site + "/api/sync/sauvegardes", {autorisation(jeton)});
+    json_t* json = lireJson(reponse);
+    json_t* liste = json ? json_object_get(json, "sauvegardes") : nullptr;
+    resultat.jetonRefuse = reponse.code == 401;
+    resultat.ok = reponse.code == 200 && json_is_array(liste);
+    if (resultat.ok)
+    {
+        size_t i;
+        json_t* element;
+        json_array_foreach(liste, i, element)
+        {
+            SauvegardeSite sauvegarde;
+            sauvegarde.id = entier(element, "id");
+            sauvegarde.jeu = champ(element, "jeu");
+            sauvegarde.dresseur = champ(element, "dresseur");
+            sauvegarde.idDresseur = champ(element, "idDresseur");
+            sauvegarde.fichier = champ(element, "fichier");
+            sauvegarde.empreinte = champ(element, "empreinte");
+            sauvegarde.tempsDeJeu = entier(element, "tempsDeJeu");
+            sauvegarde.modifieeSurSite = booleen(element, "modifieeSurSite");
+            sauvegarde.console = champ(element, "console");
+            sauvegarde.famille = champ(element, "famille");
+            json_t* cles = json_object_get(element, "cles");
+            size_t j;
+            json_t* cle;
+            json_array_foreach(cles, j, cle)
+                if (json_is_string(cle))
+                    sauvegarde.cles.push_back(json_string_value(cle));
+            resultat.sauvegardes.push_back(sauvegarde);
+        }
+    }
+    else
+        resultat.message = messageDe(reponse, json, true);
+    if (json)
+        json_decref(json);
+    return resultat;
+}
+
+ResultatComparaison comparer(const std::string& site, const std::string& jeton, int id, const std::vector<u8>& contenu)
+{
+    ResultatComparaison resultat;
+    auto reponse = requete(site + "/api/sync/sauvegardes/" + std::to_string(id) + "/comparer",
+        {autorisation(jeton), "Content-Type: application/octet-stream"}, contenu.data(), contenu.size(), true);
+    json_t* json = lireJson(reponse);
+    auto verdict = champ(json, "verdict");
+    if (reponse.code == 200 && verdict == "recuperable")
+        resultat.verdict = Verdict::Recuperable;
+    else if (reponse.code == 200 && verdict == "a-jour")
+        resultat.verdict = Verdict::AJour;
+    else if (reponse.code == 200 && verdict == "refusee")
+        resultat.verdict = Verdict::Refusee;
+    resultat.jetonRefuse = reponse.code == 401;
+    resultat.modifieeSurSite = booleen(json, "modifieeSurSite");
+    resultat.message = messageDe(reponse, json, true);
+    if (json)
+        json_decref(json);
+    return resultat;
+}
+
+ResultatTelechargement telecharger(const std::string& site, const std::string& jeton, int id, const std::string& cle)
+{
+    ResultatTelechargement resultat;
+    auto reponse = requete(site + "/api/sync/sauvegardes/" + std::to_string(id) + "?cle=" + encoder(cle), {autorisation(jeton)});
+    resultat.jetonRefuse = reponse.code == 401;
+    resultat.ok = reponse.code == 200 && !reponse.corps.empty();
+    if (resultat.ok)
+        resultat.contenu.assign(reponse.corps.begin(), reponse.corps.end());
+    else
+    {
+        json_t* json = lireJson(reponse);
+        resultat.message = messageDe(reponse, json, true);
+        if (json)
+            json_decref(json);
+    }
     return resultat;
 }

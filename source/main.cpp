@@ -1,5 +1,6 @@
 // PokeBank Sync : cherche les sauvegardes Pokémon de la 3DS (jeux 3DS, Console virtuelle, fichiers .sav de la carte
-// SD) et les envoie au site PokeBank, où elles deviennent des sauvegardes stockées (ajout ou mise à jour).
+// SD) et les envoie au site PokeBank, où elles deviennent des sauvegardes stockées (ajout ou mise à jour). Dans l'autre
+// sens (« Récupérer », touche B), remet sur la console la version du site (sauvegardes DS pour l'instant).
 //
 // Écran du haut : la liste, à cocher. Écran du bas : le détail de la ligne choisie, l'état et les touches.
 
@@ -12,6 +13,7 @@
 #include <3ds.h>
 #include <algorithm>
 #include <cstdio>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -41,7 +43,30 @@ struct Ligne
     std::string message;   // dernier message (lecture, réponse du site)
 };
 
+/// Une sauvegarde du site (« Récupérer »), et où la console la mettrait.
+struct LigneSite
+{
+    SauvegardeSite site;
+    std::string destination; // fichier sur la carte SD, vide si nulle part
+    bool remplace = false;   // une sauvegarde y est déjà (copiée avant d'être remplacée)
+    bool possible = false;   // peut être cochée
+    bool cochee = false;
+    std::string etat;
+    const char* couleur = NORMAL;
+    std::string message;
+};
+
+enum class Mode
+{
+    Envoi,        // sauvegardes de la console → site
+    Recuperation, // sauvegardes du site → console
+};
+
 PrintConsole haut, bas;
+Mode mode = Mode::Envoi;
+std::vector<LigneSite> lignesSite;
+int choixSite = 0, debutSite = 0;
+bool rechercherAuRetour = false; // une sauvegarde a été écrite : la liste d'envoi est à refaire
 Config config;
 Envois envois;
 std::vector<Ligne> lignes;
@@ -96,58 +121,109 @@ void etatSelonEnvois(Ligne& ligne)
     ligne.cochee = dernier != trace(ligne);
 }
 
+/// Ce que la liste montre d'une ligne, dans l'un ou l'autre mode.
+struct Affichage
+{
+    std::string nom;
+    std::string etat;
+    const char* couleur;
+    bool cochee;
+    std::vector<std::pair<std::string, const char*>> details; // écran du bas ; le dernier est le message
+};
+
+std::string tempsDeJeu(int secondes)
+{
+    char texte[24];
+    snprintf(texte, sizeof texte, "%d h %02d", secondes / 3600, secondes / 60 % 60);
+    return texte;
+}
+
+int nombreDeLignes()
+{
+    return static_cast<int>(mode == Mode::Envoi ? lignes.size() : lignesSite.size());
+}
+
+int& choixCourant() { return mode == Mode::Envoi ? choix : choixSite; }
+int& debutCourant() { return mode == Mode::Envoi ? debutListe : debutSite; }
+
+Affichage affichage(int n)
+{
+    if (mode == Mode::Envoi)
+    {
+        const auto& ligne = lignes[n];
+        return {ligne.sauvegarde.nom, ligne.etat, ligne.couleur, ligne.cochee,
+            {{ligne.sauvegarde.nom, CYAN}, {ligne.sauvegarde.detail, GRIS}, {ligne.message, ligne.couleur}}};
+    }
+    const auto& ligne = lignesSite[n];
+    auto titre = ligne.site.jeu + " — " + ligne.site.dresseur;
+    auto destination = ligne.destination.empty() ? std::string()
+        : (ligne.remplace ? "Remplace " : "Sera écrite dans ") + ligne.destination;
+    return {titre, ligne.etat, ligne.couleur, ligne.cochee,
+        {{titre + " (" + ligne.site.idDresseur + ")", CYAN},
+            {ligne.site.fichier + " · " + tempsDeJeu(ligne.site.tempsDeJeu) + " de jeu sur le site", GRIS},
+            {destination, GRIS},
+            {ligne.message, ligne.couleur}}};
+}
+
 void dessiner()
 {
+    bool envoi = mode == Mode::Envoi;
+    int nombre = nombreDeLignes();
+    int choixActuel = choixCourant(), debut = debutCourant();
+
     // --- Écran du haut : la liste ---
     consoleSelect(&haut);
     consoleClear();
-    ecrireA(0, 0, versConsole("PokeBank Sync"), CYAN);
+    ecrireA(0, 0, versConsole(envoi ? "PokeBank Sync" : "PokeBank Sync : récupérer"), CYAN);
     std::string relie = compte.empty() ? versConsole("pas relié (touche Y)") : versConsole("compte : " + compte);
-    if (static_cast<int>(relie.size()) > LARGEUR_HAUT - 15)
-        relie = ajuster(relie, LARGEUR_HAUT - 15);
+    if (static_cast<int>(relie.size()) > LARGEUR_HAUT - 27)
+        relie = ajuster(relie, LARGEUR_HAUT - 27);
     ecrireA(0, LARGEUR_HAUT - static_cast<int>(relie.size()), relie, compte.empty() ? JAUNE : VERT);
     ecrireA(1, 0, ajuster(versConsole(config.site.empty() ? "aucun site" : config.site), LARGEUR_HAUT), GRIS);
     ecrireA(2, 0, std::string(LARGEUR_HAUT, '\xC4'));
 
-    if (lignes.empty())
-        ecrireA(4, 1, versConsole("Aucune sauvegarde Pokémon trouvée."), JAUNE);
-    for (int i = 0; i < LIGNES_LISTE && debutListe + i < static_cast<int>(lignes.size()); i++)
+    if (nombre == 0)
+        ecrireA(4, 1, versConsole(envoi ? "Aucune sauvegarde Pokémon trouvée." : "Aucune sauvegarde du site à afficher."), JAUNE);
+    for (int i = 0; i < LIGNES_LISTE && debut + i < nombre; i++)
     {
-        int n = debutListe + i;
-        const auto& ligne = lignes[n];
-        std::string debut = std::string(n == choix ? ">" : " ") + (ligne.cochee ? "[x] " : "[ ] ");
-        std::string nom = ajuster(versConsole(ligne.sauvegarde.nom), LARGEUR_NOM);
-        ecrireA(3 + i, 0, debut + nom + " ", n == choix ? INVERSE : NORMAL);
+        int n = debut + i;
+        auto ligne = affichage(n);
+        std::string tete = std::string(n == choixActuel ? ">" : " ") + (ligne.cochee ? "[x] " : "[ ] ");
+        std::string nom = ajuster(versConsole(ligne.nom), LARGEUR_NOM);
+        ecrireA(3 + i, 0, tete + nom + " ", n == choixActuel ? INVERSE : NORMAL);
         ecrireA(3 + i, LARGEUR_HAUT - LARGEUR_ETAT, ajuster(versConsole(ligne.etat), LARGEUR_ETAT), ligne.couleur);
     }
-    if (debutListe > 0)
+    if (debut > 0)
         ecrireA(3, LARGEUR_HAUT - 1, "\x1E", GRIS); // il y en a au-dessus
-    if (debutListe + LIGNES_LISTE < static_cast<int>(lignes.size()))
+    if (debut + LIGNES_LISTE < nombre)
         ecrireA(3 + LIGNES_LISTE - 1, LARGEUR_HAUT - 1, "\x1F", GRIS); // et en dessous
 
-    int cochees = std::count_if(lignes.begin(), lignes.end(), [](const Ligne& l) { return l.cochee; });
-    char resume[64];
-    snprintf(resume, sizeof resume, "%d sauvegarde(s), %d cochée(s)", static_cast<int>(lignes.size()), cochees);
+    int cochees = 0;
+    for (int n = 0; n < nombre; n++)
+        cochees += affichage(n).cochee;
+    char resume[80];
+    snprintf(resume, sizeof resume, envoi ? "%d sauvegarde(s), %d cochée(s)" : "%d sauvegarde(s) sur le site, %d cochée(s)",
+        nombre, cochees);
     ecrireA(HAUTEUR - 2, 0, versConsole(resume), GRIS);
 
     // --- Écran du bas : détail, état, touches ---
     consoleSelect(&bas);
     consoleClear();
     int y = 0;
-    if (choix < static_cast<int>(lignes.size()))
+    if (choixActuel < nombre)
     {
-        const auto& ligne = lignes[choix];
-        for (const auto& l : couper(versConsole(ligne.sauvegarde.nom), LARGEUR_BAS))
-            ecrireA(y++, 0, l, CYAN);
-        for (const auto& l : couper(versConsole(ligne.sauvegarde.detail), LARGEUR_BAS))
-            if (y < 8)
-                ecrireA(y++, 0, l, GRIS);
-        if (!ligne.message.empty())
+        auto ligne = affichage(choixActuel);
+        for (size_t i = 0; i < ligne.details.size(); i++)
         {
-            y++;
-            for (const auto& l : couper(versConsole(ligne.message), LARGEUR_BAS))
-                if (y < 15)
-                    ecrireA(y++, 0, l, ligne.couleur);
+            const auto& [texte, couleur] = ligne.details[i];
+            if (texte.empty())
+                continue;
+            bool message = i + 1 == ligne.details.size();
+            if (message)
+                y++;
+            for (const auto& l : couper(versConsole(texte), LARGEUR_BAS))
+                if (y < (message ? 15 : 9))
+                    ecrireA(y++, 0, l, couleur);
         }
     }
 
@@ -158,8 +234,8 @@ void dessiner()
             ecrireA(y++, 0, l, couleurStatut);
 
     ecrireA(25, 0, versConsole("A cocher   L/R tout décocher/cocher"), GRIS);
-    ecrireA(26, 0, versConsole("X envoyer les sauvegardes cochées"), GRIS);
-    ecrireA(27, 0, versConsole("Y relier au site   SELECT rechercher"), GRIS);
+    ecrireA(26, 0, versConsole(envoi ? "X envoyer   B récupérer depuis le site" : "X récupérer les sauvegardes cochées"), GRIS);
+    ecrireA(27, 0, versConsole(envoi ? "Y relier au site   SELECT rechercher" : "B retour à l'envoi   SELECT relire"), GRIS);
     ecrireA(28, 0, versConsole("START quitter"), GRIS);
     afficherMaintenant();
 }
@@ -334,7 +410,7 @@ void envoyerCochees()
             erreurs++;
             continue;
         }
-        auto resultat = envoyer(config.site, config.jeton, ligne.sauvegarde.fichier, contenu);
+        auto resultat = envoyer(config.site, config.jeton, ligne.sauvegarde.fichier, ligne.sauvegarde.cle, contenu);
         ligne.message = resultat.message;
         switch (resultat.statut)
         {
@@ -380,15 +456,256 @@ void envoyerCochees()
     definirStatut(resume, refusees + erreurs > 0 ? JAUNE : VERT);
 }
 
+std::string nomDeFichier(const std::string& chemin)
+{
+    return chemin.substr(chemin.rfind('/') + 1);
+}
+
+std::string nomDeConsole(const std::string& console)
+{
+    if (console == "3ds")
+        return "3DS";
+    if (console == "gba")
+        return "GBA";
+    if (console == "gb")
+        return "Game Boy";
+    return "d'autres consoles";
+}
+
+/// Où mettre une sauvegarde DS du site sur cette console : son emplacement connu (envoi ou récupération précédente),
+/// sinon une sauvegarde de la carte SD du même nom, sinon à côté d'une ROM du même jeu qui n'a pas encore de sauvegarde
+/// (de préférence celle du même nom). Vide si nulle part. `prises` : destinations déjà données à d'autres lignes.
+std::string destinationDs(const SauvegardeSite& site, const std::vector<RomDs>& roms, const std::set<std::string>& prises)
+{
+    for (const auto& cle : site.cles)
+        if (cle.rfind("sd:", 0) == 0 && fichierExiste(cle.substr(3)) && !prises.count(cle.substr(3)))
+            return cle.substr(3);
+    for (const auto& ligne : lignes)
+        if (ligne.sauvegarde.origine == Origine::CarteSD && ligne.sauvegarde.fichier == site.fichier
+            && !prises.count(ligne.sauvegarde.chemin))
+            return ligne.sauvegarde.chemin;
+
+    auto codes = codesPourFamille(site.famille);
+    const RomDs* choisie = nullptr;
+    for (const auto& rom : roms)
+    {
+        if (std::find(codes.begin(), codes.end(), rom.code) == codes.end() || fichierExiste(rom.sauvegarde)
+            || prises.count(rom.sauvegarde))
+            continue;
+        if (!choisie || nomDeFichier(rom.sauvegarde) == site.fichier)
+            choisie = &rom;
+    }
+    return choisie ? choisie->sauvegarde : "";
+}
+
+/// Liste « Récupérer » : sauvegardes du site, destination de chacune sur la console, et avis du site pour celles qui
+/// remplaceraient une sauvegarde déjà là (même partie, moins de temps de jeu ou modifiée par le site).
+void preparerRecuperation()
+{
+    lignesSite.clear();
+    choixSite = debutSite = 0;
+    if (!config.relie() || compte.empty())
+    {
+        definirStatut("Relie d'abord la console au site (touche Y).", JAUNE);
+        return;
+    }
+    if (!wifiConnecte())
+    {
+        definirStatut("Pas de connexion Wi-Fi : active-la pour récupérer.", ROUGE);
+        return;
+    }
+    patienter("Liste des sauvegardes du site...");
+    auto liste = listerSauvegardesSite(config.site, config.jeton);
+    if (!liste.ok)
+    {
+        if (liste.jetonRefuse)
+            compte.clear();
+        definirStatut(liste.message, ROUGE);
+        return;
+    }
+
+    auto roms = chercherRomsDs(config.dossiers);
+    std::set<std::string> prises;
+    for (const auto& site : liste.sauvegardes)
+    {
+        LigneSite ligne;
+        ligne.site = site;
+        if (site.console != "ds")
+        {
+            ligne.etat = "plus tard", ligne.couleur = GRIS;
+            ligne.message = "La récupération des sauvegardes " + nomDeConsole(site.console)
+                + " viendra plus tard : pour l'instant, seulement les sauvegardes DS.";
+        }
+        else if ((ligne.destination = destinationDs(site, roms, prises)).empty())
+        {
+            ligne.etat = "pas de ROM", ligne.couleur = GRIS;
+            ligne.message = "Aucune ROM de ce jeu sans sauvegarde sur la carte SD : ajoute-la (à la racine pour "
+                            "TWiLight Menu++), puis relis la liste (SELECT).";
+        }
+        else
+        {
+            prises.insert(ligne.destination);
+            ligne.remplace = fichierExiste(ligne.destination);
+            ligne.possible = true;
+            if (!ligne.remplace)
+                ligne.etat = "à placer", ligne.couleur = CYAN,
+                ligne.message = "Pas encore sur la console : coche-la pour l'y mettre.";
+        }
+        lignesSite.push_back(ligne);
+    }
+
+    // Sauvegardes déjà sur la console : le site dit si elles peuvent être remplacées.
+    int total = std::count_if(lignesSite.begin(), lignesSite.end(), [](const LigneSite& l) { return l.remplace; });
+    int numero = 0;
+    for (auto& ligne : lignesSite)
+    {
+        if (!ligne.remplace)
+            continue;
+        char progression[64];
+        snprintf(progression, sizeof progression, "Comparaison %d/%d : ", ++numero, total);
+        patienter(progression + ligne.site.jeu + " — " + ligne.site.dresseur + "...");
+
+        Sauvegarde locale;
+        locale.origine = Origine::CarteSD;
+        locale.chemin = ligne.destination;
+        std::vector<u8> contenu;
+        std::string erreur;
+        if (!lireSauvegarde(locale, contenu, erreur))
+        {
+            ligne.etat = "illisible", ligne.couleur = ROUGE, ligne.message = erreur, ligne.possible = false;
+            continue;
+        }
+        if (empreinte(contenu) == ligne.site.empreinte)
+        {
+            ligne.etat = "à jour", ligne.couleur = GRIS, ligne.possible = false;
+            ligne.message = "Identique à celle du site : rien à récupérer.";
+            continue;
+        }
+        auto avis = comparer(config.site, config.jeton, ligne.site.id, contenu);
+        if (avis.jetonRefuse)
+        {
+            compte.clear();
+            lignesSite.clear();
+            definirStatut(avis.message, ROUGE);
+            return;
+        }
+        ligne.message = avis.message;
+        switch (avis.verdict)
+        {
+        case Verdict::Recuperable:
+            ligne.etat = "à récupérer", ligne.couleur = JAUNE;
+            ligne.cochee = avis.modifieeSurSite; // cochées d'office : celles que le site a modifiées
+            ligne.message += " Ta sauvegarde actuelle sera copiée avant d'être remplacée.";
+            break;
+        case Verdict::AJour:
+            ligne.etat = "à jour", ligne.couleur = GRIS, ligne.possible = false;
+            break;
+        case Verdict::Refusee:
+            ligne.etat = "refusée", ligne.couleur = ROUGE, ligne.possible = false;
+            break;
+        case Verdict::Erreur:
+            ligne.etat = "erreur", ligne.couleur = ROUGE, ligne.possible = false;
+            break;
+        }
+    }
+    definirStatut(lignesSite.empty() ? "Aucune sauvegarde stockée sur le site."
+                                     : "Coche les sauvegardes à récupérer, puis appuie sur X.");
+}
+
+void recupererCochees()
+{
+    if (!wifiConnecte())
+    {
+        definirStatut("Pas de connexion Wi-Fi : active-la pour récupérer.", ROUGE);
+        return;
+    }
+    int total = std::count_if(lignesSite.begin(), lignesSite.end(), [](const LigneSite& l) { return l.cochee; });
+    if (total == 0)
+    {
+        definirStatut("Aucune sauvegarde cochée (touche A).", JAUNE);
+        return;
+    }
+
+    int numero = 0, reussies = 0, erreurs = 0;
+    for (auto& ligne : lignesSite)
+    {
+        if (!ligne.cochee)
+            continue;
+        char progression[64];
+        snprintf(progression, sizeof progression, "Récupération %d/%d : ", ++numero, total);
+        patienter(progression + ligne.site.jeu + " — " + ligne.site.dresseur + "...");
+
+        auto fichier = telecharger(config.site, config.jeton, ligne.site.id, "sd:" + ligne.destination);
+        if (fichier.jetonRefuse)
+        {
+            compte.clear();
+            definirStatut(fichier.message, ROUGE);
+            break;
+        }
+        std::string message;
+        if (!fichier.ok)
+            message = fichier.message;
+        else if (empreinte(fichier.contenu) != ligne.site.empreinte)
+            message = "Le fichier reçu n'est pas celui de la liste (modifié sur le site entre-temps ?) : relis la liste (SELECT).";
+        else if (ecrireSauvegardeSD(ligne.destination, fichier.contenu, message))
+        {
+            ligne.etat = "récupérée", ligne.couleur = VERT, ligne.cochee = false, ligne.possible = false;
+            ligne.message = "Écrite dans " + ligne.destination + (message.empty() ? "." : ". " + message);
+            // Pour l'envoi, c'est désormais la version du site : « envoyée » tant qu'on n'y rejoue pas.
+            envois.noter("sd:" + ligne.destination, ligne.site.empreinte + "|" + nomDeFichier(ligne.destination));
+            rechercherAuRetour = true;
+            reussies++;
+            continue;
+        }
+        ligne.etat = "erreur", ligne.couleur = ROUGE, ligne.message = message;
+        erreurs++;
+    }
+    envois.enregistrer();
+    if (compte.empty())
+        return; // console plus reliée : message déjà affiché
+
+    char resume[160];
+    snprintf(resume, sizeof resume, "%d récupérée(s), %d erreur(s).%s", reussies, erreurs,
+        erreurs > 0 ? " Choisis une ligne pour lire le message." : " Les copies des anciennes sont dans sdmc:/3ds/PokeBankSync/copies.");
+    definirStatut(resume, erreurs > 0 ? JAUNE : VERT);
+}
+
 void deplacer(int pas)
 {
-    if (lignes.empty())
+    int nombre = nombreDeLignes();
+    if (nombre == 0)
         return;
-    choix = std::clamp(choix + pas, 0, static_cast<int>(lignes.size()) - 1);
-    if (choix < debutListe)
-        debutListe = choix;
-    else if (choix >= debutListe + LIGNES_LISTE)
-        debutListe = choix - LIGNES_LISTE + 1;
+    int& actuel = choixCourant();
+    int& debut = debutCourant();
+    actuel = std::clamp(actuel + pas, 0, nombre - 1);
+    if (actuel < debut)
+        debut = actuel;
+    else if (actuel >= debut + LIGNES_LISTE)
+        debut = actuel - LIGNES_LISTE + 1;
+}
+
+void cocher(bool tout, bool valeur)
+{
+    if (mode == Mode::Envoi)
+    {
+        if (!tout)
+        {
+            if (choix < static_cast<int>(lignes.size()) && !lignes[choix].empreinte.empty())
+                lignes[choix].cochee = !lignes[choix].cochee;
+            return;
+        }
+        for (auto& ligne : lignes)
+            ligne.cochee = valeur && !ligne.empreinte.empty();
+        return;
+    }
+    if (!tout)
+    {
+        if (choixSite < static_cast<int>(lignesSite.size()) && lignesSite[choixSite].possible)
+            lignesSite[choixSite].cochee = !lignesSite[choixSite].cochee;
+        return;
+    }
+    for (auto& ligne : lignesSite)
+        ligne.cochee = valeur && ligne.possible;
 }
 
 } // namespace
@@ -434,23 +751,45 @@ int main()
             deplacer(LIGNES_LISTE);
         if (touches & KEY_LEFT)
             deplacer(-LIGNES_LISTE);
-        if ((touches & KEY_A) && choix < static_cast<int>(lignes.size()) && !lignes[choix].empreinte.empty())
-            lignes[choix].cochee = !lignes[choix].cochee;
+        if (touches & KEY_A)
+            cocher(false, true);
         if (touches & KEY_R)
-            for (auto& ligne : lignes)
-                ligne.cochee = !ligne.empreinte.empty();
+            cocher(true, true);
         if (touches & KEY_L)
-            for (auto& ligne : lignes)
-                ligne.cochee = false;
-        if (touches & KEY_X)
-            envoyerCochees();
-        if (touches & KEY_Y)
-            relierAuSite();
-        if (touches & KEY_SELECT)
+            cocher(true, false);
+        if (mode == Mode::Envoi)
         {
-            rechercher();
-            if (reseauPret && config.relie())
-                verifier();
+            if (touches & KEY_X)
+                envoyerCochees();
+            if (touches & KEY_Y)
+                relierAuSite();
+            if (touches & KEY_SELECT)
+            {
+                rechercher();
+                if (reseauPret && config.relie())
+                    verifier();
+            }
+            if (touches & KEY_B)
+            {
+                mode = Mode::Recuperation;
+                preparerRecuperation();
+            }
+        }
+        else
+        {
+            if (touches & KEY_X)
+                recupererCochees();
+            if (touches & KEY_SELECT)
+                preparerRecuperation();
+            if (touches & KEY_B)
+            {
+                mode = Mode::Envoi;
+                if (rechercherAuRetour)
+                    rechercher(); // les sauvegardes écrites apparaissent, « envoyées »
+                else
+                    definirStatut("Coche les sauvegardes à envoyer, puis appuie sur X.");
+                rechercherAuRetour = false;
+            }
         }
         dessiner();
     }
