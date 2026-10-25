@@ -4,7 +4,7 @@ Homebrew 3DS qui cherche les sauvegardes Pokémon de la console et les envoie au
 (dépôt `MonstersUniverse`), où elles deviennent des **sauvegardes stockées** : une partie nouvelle est ajoutée, une partie
 déjà stockée par ce compte est mise à jour, avec les règles de « Mes sauvegardes » (voir le README du site, « Synchronisation
 depuis une 3DS »). Dans l'autre sens, **« Récupérer »** remet sur la console la version du site (sauvegardes DS pour
-l'instant ; 3DS, GBA et Game Boy viendront ensuite), après une copie de celle de la console.
+l'instant ; 3DS et GBA viendront ensuite), après une copie de celle de la console.
 
 - **Console** : 3DS avec un firmware modifié (Luma3DS) et le Homebrew Launcher.
 - **Stack** : C++17, libctru (devkitARM), libcurl + mbedTLS (HTTPS), jansson (JSON). Interface en mode texte sur les deux
@@ -36,8 +36,11 @@ La liste montre les sauvegardes stockées sur le site (« Jeu — Dresseur ») e
 | **à placer** | Pas encore sur la console : sera écrite à côté d'une ROM du même jeu qui n'a pas de sauvegarde. Jamais cochée d'office. |
 | **à jour** | Identique sur la console et sur le site. |
 | **refusée** | Le site refuse : la console a **plus de temps de jeu** (sa progression serait perdue : envoie-la plutôt) ou c'est **une autre partie** (autre dresseur) au même endroit. |
-| **pas de ROM** | Aucune ROM de ce jeu sans sauvegarde sur la carte SD. |
-| **plus tard** | Sauvegarde 3DS, GBA ou Game Boy : pas encore récupérable. |
+| **pas de ROM** | DS : aucune ROM de ce jeu sans sauvegarde sur la carte SD. |
+| **pas de jeu** | Game Boy : aucun jeu compatible (même jeu, même région) lancé au moins une fois. |
+| **pas de place** | Game Boy : les jeux compatibles ont déjà une autre partie, qui ne sera pas écrasée. |
+| **autre lang.** | Game Boy : la sauvegarde vient d'un jeu d'une autre langue que les jeux sans partie de la console. |
+| **plus tard** | Sauvegarde 3DS ou GBA : pas encore récupérable. |
 
 **X** récupère les sauvegardes cochées, **B** revient à l'envoi (la liste est refaite : les sauvegardes écrites y sont
 « envoyées »), **SELECT** relit la liste du site.
@@ -51,6 +54,31 @@ La liste montre les sauvegardes stockées sur le site (« Jeu — Dresseur ») e
 - **Avant d'écraser** : copie de la sauvegarde de la console dans `sdmc:/3ds/PokeBankSync/copies/<date>_<fichier>` (rien
   n'est écrit si la copie échoue) ; la version du site est écrite dans un fichier `.tmp`, qui ne remplace l'ancienne
   qu'une fois complet, après vérification de son empreinte SHA-256 (celle annoncée par la liste).
+- **Où** (sauvegardes Game Boy, Console virtuelle) : `sav.dat` d'un jeu installé **lancé au moins une fois** (avant,
+  il n'a pas de sauvegarde), du même jeu et de la même région (famille du site : `RB` Rouge/Bleu/Vert, `YW` Jaune, `GS`
+  Or/Argent, `C` Cristal, `-JP` / `-KO` pour les versions japonaise et coréenne, de disposition différente ; un jeu injecté
+  reconnu à sa sauvegarde vaut `G1` pour Rouge, Bleu ou Jaune). Dans l'ordre : le jeu noté par le site (envoi ou
+  récupération depuis ce jeu), un jeu compatible qui a **la même partie** (le site compare les dresseurs), un jeu
+  compatible lancé mais **sans partie** Pokémon (« à placer »). Jamais par-dessus une autre partie.
+- **Version** (Game Boy) : le site ne distingue pas Rouge de Bleu (même format, « Rouge / Bleu » pour PKHeX). La version
+  vient du **nom du fichier** sur le site (« Pokémon Rouge.sav » donné par la console à l'envoi depuis la Console
+  virtuelle ; « Pokemon - Blue Version (UE).sav » d'un émulateur ; mots en français, anglais, allemand, espagnol et
+  italien, `versionGbDansTexte`), sinon du jeu noté par le site. Une version connue ne va que dans un jeu de cette
+  version (« pas de place » sinon) ; inconnue, dans n'importe quel jeu compatible, avec un avertissement. Les sauvegardes
+  de version connue choisissent leur jeu en premier.
+- **Langue** (Game Boy) : une sauvegarde contient des adresses propres à la ROM de sa langue (carte, scripts) ; dans un
+  jeu d'une autre langue, la partie est inutilisable (tout « glitché »). Rien ne la dit dans la sauvegarde (seuls japonais
+  et coréen se reconnaissent) : elle est connue quand la sauvegarde a été envoyée depuis un jeu de la Console virtuelle
+  de cette console (emplacement noté par le site, langue d'après l'identifiant de titre). Pour un placement, une langue
+  connue et différente est refusée (« autre lang. ») ; inconnue (sauvegarde d'émulateur), la ligne est proposée avec un
+  avertissement, jamais cochée d'office. Remplacer la même partie ne pose pas ce problème.
+- **Sauvegarde d'émulateur** (Game Boy) : la mémoire du jeu (32 Ko) suivie de quelques octets de l'émulateur (32 792
+  octets pour une Rouge) ; seuls les 32 Ko sont écrits dans le `sav.dat` de la Console virtuelle (la fin du fichier du jeu
+  est gardée), et le site les compte comme identiques (« à jour ») à la version de la console.
+- **Écriture d'un jeu Game Boy** (comme PKSM) : copie de l'ancien `sav.dat` dans `copies/<date>_<titre>_sav.dat`, écriture
+  (même taille que l'ancien, sinon rien n'est fait), **validation** de l'archive (`ARCHIVE_ACTION_COMMIT_SAVE_DATA` : sans
+  elle, le système garde l'ancienne), puis **effacement de la valeur sécurisée** du jeu (`FSUSER_ControlSecureSave`), sans
+  quoi le jeu, qui protège sa sauvegarde contre un retour en arrière, la croirait corrompue.
 - Le site compare les deux versions avec PKHeX (même partie, temps de jeu) : la console ne sait pas lire le temps de jeu.
 - Une récupération vaut « Télécharger » sur le site : le blocage de « Mettre à jour » après un retrait est levé.
 - Cas sans issue pour l'instant : tu as joué sur la console **après** une modification du site sans la récupérer
@@ -116,7 +144,7 @@ le Homebrew Launcher, puis `3dslink PokeBankSync.3dsx` (outils de devkitPro).
 | Fichier | Rôle |
 |---|---|
 | `source/main.cpp` | Écrans (liste en haut, détail et touches en bas), boucle principale, liaison, envoi, « Récupérer » (destination, comparaison, récupération) |
-| `source/sauvegardes.cpp` | Recherche des sauvegardes : jeux 3DS et Console virtuelle (identifiants de titre, nom de l'icône SMDH, archive de sauvegarde), jeux GBA injectés (format AGB_FIRM), fichiers `.sav` de la carte SD (reconnus à leur contenu comme PKHeX, ROM pour le nom exact) ; lecture ; ROM DS et emplacement des sauvegardes de TWiLight Menu++, écriture sûre (copie, fichier temporaire) |
+| `source/sauvegardes.cpp` | Recherche des sauvegardes : jeux 3DS et Console virtuelle (identifiants de titre, nom de l'icône SMDH, archive de sauvegarde), jeux GBA injectés (format AGB_FIRM), fichiers `.sav` de la carte SD (reconnus à leur contenu comme PKHeX, ROM pour le nom exact) ; lecture ; ROM DS et emplacement des sauvegardes de TWiLight Menu++, écriture sûre (copie, fichier temporaire) ; jeux Game Boy installés (famille), écriture dans la sauvegarde d'un jeu (validation, valeur sécurisée) |
 | `source/luma.s` | Appel système de Luma3DS `svcControlService` (svc 0xB0), pour emprunter la connexion du système à `PxiFS0` |
 | `source/site.cpp` | API du site (`/api/sync/liaison`, `/compte`, `/sauvegardes` : envoi, liste, comparaison, téléchargement) en HTTPS, messages d'erreur réseau |
 | `source/envois.cpp` | Empreintes des derniers envois (`envois.txt`), SHA-256 |
@@ -135,7 +163,7 @@ le Homebrew Launcher, puis `3dslink PokeBankSync.3dsx` (outils de devkitPro).
 | [zlib](https://zlib.net) (paquet `3ds-zlib`) | Dépendance de libcurl | zlib |
 | [List of Pokémon titles for Nintendo 3DS](https://gist.github.com/Bl4ckSh4rk/256ed3b857c9677310837d5180121f35) (Bl4ckSh4rk) | Identifiants de titre de la Console virtuelle, par version et par langue (`JEUX` dans `sauvegardes.cpp`) | Données publiées (gist) |
 | [PKHeX](https://github.com/kwsch/PKHeX) (Kaphotics et contributeurs) | Règles de reconnaissance des sauvegardes à leur contenu (`SaveUtil` : blocs de 4e génération, CRC16 de 5e génération, listes de l'équipe de 1re et 2e génération), numéros de version de 5e génération | GPL-3.0 |
-| [PKSM](https://github.com/FlagBrew/PKSM) (FlagBrew) | Identifiants de titre des jeux 3DS et de la Console virtuelle (recoupés), codes des jeux DS, fichiers `main` / `sav.dat` des sauvegardes, format des sauvegardes GBA injectées (`titles/loader.cpp`) | GPL-3.0 |
+| [PKSM](https://github.com/FlagBrew/PKSM) (FlagBrew) | Identifiants de titre des jeux 3DS et de la Console virtuelle (recoupés), codes des jeux DS, fichiers `main` / `sav.dat` des sauvegardes, format des sauvegardes GBA injectées, écriture dans la sauvegarde d'un jeu (validation, effacement de la valeur sécurisée) (`titles/loader.cpp`) | GPL-3.0 |
 | [Checkpoint](https://github.com/FlagBrew/Checkpoint) (FlagBrew) | Méthode de lecture de l'icône (SMDH) et de l'archive de sauvegarde d'un titre | GPL-3.0 |
 | ISRG (Let's Encrypt), Sectigo (USERTrust) | Certificats racines de `data/racines.pem` | Certificats publics |
 

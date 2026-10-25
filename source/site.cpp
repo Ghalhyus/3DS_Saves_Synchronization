@@ -339,6 +339,7 @@ ResultatComparaison comparer(const std::string& site, const std::string& jeton, 
         resultat.verdict = Verdict::Refusee;
     resultat.jetonRefuse = reponse.code == 401;
     resultat.modifieeSurSite = booleen(json, "modifieeSurSite");
+    resultat.raison = champ(json, "raison");
     resultat.message = messageDe(reponse, json, true);
     if (json)
         json_decref(json);

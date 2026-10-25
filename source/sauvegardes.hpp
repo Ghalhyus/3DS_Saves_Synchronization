@@ -67,6 +67,40 @@ std::vector<std::string> codesPourFamille(const std::string& famille);
 /// Le fichier existe sur la carte SD.
 bool fichierExiste(const std::string& chemin);
 
+/// Jeu Game Boy de la Console virtuelle installé et lancé au moins une fois (il a une sauvegarde « sav.dat »).
+struct JeuGb
+{
+    Sauvegarde cible;    // Origine::ConsoleVirtuelle : titre, « /sav.dat », clé, nom et nom de fichier (comme à l'envoi)
+    std::string famille; // « RB », « YW », « GS », « C » ; « G1 » (jeu injecté : Rouge, Bleu ou Jaune) ; + « -JP », « -KO »
+    std::string langue;  // « anglais », « français »... ; vide pour un jeu injecté (inconnue)
+    std::string version; // « rouge », « bleu », « vert », « jaune », « or », « argent », « cristal » ; vide si inconnue
+    bool partie = false; // sav.dat contient déjà une partie Pokémon
+};
+
+/// Version Game Boy nommée dans un texte (« Pokémon Rouge », « Pokemon - Blue Version (USA, Europe).sav ») : « rouge »,
+/// « bleu », « vert », « jaune », « or », « argent » ou « cristal », d'après des mots en français, anglais, allemand,
+/// espagnol ou italien ; vide si aucune (ou plusieurs). Le site ne distingue pas Rouge de Bleu (même format) : seuls le
+/// jeu d'origine ou le nom du fichier le disent.
+std::string versionGbDansTexte(const std::string& texte);
+
+/// Version Game Boy d'un jeu de la Console virtuelle d'après son identifiant de titre, vide si inconnue.
+std::string versionDuTitre(u64 titre);
+
+/// Langue d'un jeu de la Console virtuelle d'après son identifiant de titre (« français »), vide si inconnue. Une
+/// sauvegarde Game Boy contient des adresses propres à la ROM de sa langue : inutilisable dans un jeu d'une autre langue.
+std::string langueDuTitre(u64 titre);
+
+/// Jeux Game Boy de la Console virtuelle (identifiants connus, ou jeu injecté qui a déjà une partie Pokémon).
+std::vector<JeuGb> chercherJeuxGb();
+
+/// Une sauvegarde Game Boy du site (famille donnée par le site) peut aller dans ce jeu : même jeu et même région.
+bool familleGbCompatible(const std::string& site, const std::string& jeu);
+
+/// Remplace la sauvegarde d'un jeu installé (« sav.dat » de la Console virtuelle) par `contenu`, de même taille : copie
+/// de l'ancienne dans sdmc:/3ds/PokeBankSync/copies/, écriture, validation de l'archive, puis effacement de la valeur
+/// sécurisée du jeu (comme PKSM), sans quoi il croirait sa sauvegarde corrompue. Rien n'est remplacé en cas d'échec.
+bool ecrireSauvegardeTitre(const Sauvegarde& cible, const std::vector<u8>& contenu, std::string& message);
+
 /// Écrit une sauvegarde récupérée à cet emplacement de la carte SD. S'il y en a déjà une, elle est d'abord copiée dans
 /// sdmc:/3ds/PokeBankSync/copies/ (rien n'est écrit si la copie échoue) ; la nouvelle est écrite dans un fichier
 /// temporaire, qui ne remplace l'ancienne qu'une fois complet. `message` : où est la copie, ou ce qui a échoué.

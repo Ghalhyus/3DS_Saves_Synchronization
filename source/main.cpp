@@ -1,6 +1,6 @@
 // PokeBank Sync : cherche les sauvegardes Pokémon de la 3DS (jeux 3DS, Console virtuelle, fichiers .sav de la carte
 // SD) et les envoie au site PokeBank, où elles deviennent des sauvegardes stockées (ajout ou mise à jour). Dans l'autre
-// sens (« Récupérer », touche B), remet sur la console la version du site (sauvegardes DS pour l'instant).
+// sens (« Récupérer », touche B), remet sur la console la version du site (sauvegardes DS et Game Boy pour l'instant).
 //
 // Écran du haut : la liste, à cocher. Écran du bas : le détail de la ligne choisie, l'état et les touches.
 
@@ -13,6 +13,7 @@
 #include <3ds.h>
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <set>
 #include <string>
 #include <vector>
@@ -47,8 +48,8 @@ struct Ligne
 struct LigneSite
 {
     SauvegardeSite site;
-    std::string destination; // fichier sur la carte SD, vide si nulle part
-    bool remplace = false;   // une sauvegarde y est déjà (copiée avant d'être remplacée)
+    Sauvegarde cible;        // où la mettre : fichier de la carte SD (DS) ou sauvegarde d'un jeu (GB) ; cle vide : nulle part
+    bool remplace = false;   // la même partie y est déjà (copiée avant d'être remplacée)
     bool possible = false;   // peut être cochée
     bool cochee = false;
     std::string etat;
@@ -138,6 +139,12 @@ std::string tempsDeJeu(int secondes)
     return texte;
 }
 
+/// Où est (ou sera) une sauvegarde sur la console, pour l'afficher.
+std::string lieu(const Sauvegarde& cible)
+{
+    return cible.origine == Origine::CarteSD ? cible.chemin : cible.nom + " (" + cible.detail + ")";
+}
+
 int nombreDeLignes()
 {
     return static_cast<int>(mode == Mode::Envoi ? lignes.size() : lignesSite.size());
@@ -156,8 +163,8 @@ Affichage affichage(int n)
     }
     const auto& ligne = lignesSite[n];
     auto titre = ligne.site.jeu + " — " + ligne.site.dresseur;
-    auto destination = ligne.destination.empty() ? std::string()
-        : (ligne.remplace ? "Remplace " : "Sera écrite dans ") + ligne.destination;
+    auto destination = ligne.cible.cle.empty() ? std::string()
+        : (ligne.remplace ? "Remplace " : "Sera écrite dans ") + lieu(ligne.cible);
     return {titre, ligne.etat, ligne.couleur, ligne.cochee,
         {{titre + " (" + ligne.site.idDresseur + ")", CYAN},
             {ligne.site.fichier + " · " + tempsDeJeu(ligne.site.tempsDeJeu) + " de jeu sur le site", GRIS},
@@ -461,6 +468,17 @@ std::string nomDeFichier(const std::string& chemin)
     return chemin.substr(chemin.rfind('/') + 1);
 }
 
+/// Sauvegarde DS à cet emplacement de la carte SD (clé et nom de fichier comme à l'envoi).
+Sauvegarde cibleSD(const std::string& chemin)
+{
+    Sauvegarde cible;
+    cible.origine = Origine::CarteSD;
+    cible.chemin = chemin;
+    cible.cle = "sd:" + chemin;
+    cible.fichier = nomDeFichier(chemin);
+    return cible;
+}
+
 std::string nomDeConsole(const std::string& console)
 {
     if (console == "3ds")
@@ -474,15 +492,15 @@ std::string nomDeConsole(const std::string& console)
 
 /// Où mettre une sauvegarde DS du site sur cette console : son emplacement connu (envoi ou récupération précédente),
 /// sinon une sauvegarde de la carte SD du même nom, sinon à côté d'une ROM du même jeu qui n'a pas encore de sauvegarde
-/// (de préférence celle du même nom). Vide si nulle part. `prises` : destinations déjà données à d'autres lignes.
+/// (de préférence celle du même nom). Vide si nulle part. `prises` : clés déjà données à d'autres lignes.
 std::string destinationDs(const SauvegardeSite& site, const std::vector<RomDs>& roms, const std::set<std::string>& prises)
 {
     for (const auto& cle : site.cles)
-        if (cle.rfind("sd:", 0) == 0 && fichierExiste(cle.substr(3)) && !prises.count(cle.substr(3)))
+        if (cle.rfind("sd:", 0) == 0 && fichierExiste(cle.substr(3)) && !prises.count(cle))
             return cle.substr(3);
     for (const auto& ligne : lignes)
         if (ligne.sauvegarde.origine == Origine::CarteSD && ligne.sauvegarde.fichier == site.fichier
-            && !prises.count(ligne.sauvegarde.chemin))
+            && !prises.count(ligne.sauvegarde.cle))
             return ligne.sauvegarde.chemin;
 
     auto codes = codesPourFamille(site.famille);
@@ -490,12 +508,158 @@ std::string destinationDs(const SauvegardeSite& site, const std::vector<RomDs>& 
     for (const auto& rom : roms)
     {
         if (std::find(codes.begin(), codes.end(), rom.code) == codes.end() || fichierExiste(rom.sauvegarde)
-            || prises.count(rom.sauvegarde))
+            || prises.count("sd:" + rom.sauvegarde))
             continue;
         if (!choisie || nomDeFichier(rom.sauvegarde) == site.fichier)
             choisie = &rom;
     }
     return choisie ? choisie->sauvegarde : "";
+}
+
+/// Où mettre une sauvegarde Game Boy du site : le jeu où elle a déjà été envoyée ou récupérée (emplacement connu), sinon
+/// un jeu compatible (même jeu, même région) qui contient la même partie (le site compare les dresseurs), sinon un jeu
+/// compatible lancé mais sans partie Pokémon. Jamais par-dessus une autre partie. Faux si la console n'est plus reliée.
+/// Jeu de la Console virtuelle d'où la sauvegarde du site a été envoyée (ou où elle a été récupérée) sur cette
+/// console : son identifiant de titre, 0 si aucun.
+u64 titreDOrigine(const SauvegardeSite& site)
+{
+    for (const auto& cle : site.cles)
+        if (cle.rfind("titre:", 0) == 0)
+            return std::strtoull(cle.substr(6, 16).c_str(), nullptr, 16);
+    return 0;
+}
+
+/// Version exacte d'une sauvegarde Game Boy du site (« rouge », « bleu »...) : le site ne la connaît pas (Rouge et Bleu ont
+/// le même format), mais le nom du fichier la dit (« Pokémon Rouge.sav », donné par la console à l'envoi depuis un jeu de la
+/// Console virtuelle ; nom de l'émulateur sinon), ou à défaut le jeu noté par le site. Le nom d'abord : un jeu noté peut
+/// venir d'une récupération dans le mauvais jeu. Vide si inconnue.
+std::string versionGbDuSite(const SauvegardeSite& site)
+{
+    if (auto version = versionGbDansTexte(site.fichier); !version.empty())
+        return version;
+    u64 titre = titreDOrigine(site);
+    return titre ? versionDuTitre(titre) : "";
+}
+
+bool placerGb(LigneSite& ligne, const std::vector<JeuGb>& jeux, std::set<std::string>& prises)
+{
+    std::vector<const JeuGb*> compatibles;
+    for (const auto& jeu : jeux)
+        if (familleGbCompatible(ligne.site.famille, jeu.famille) && !prises.count(jeu.cible.cle))
+            compatibles.push_back(&jeu);
+
+    // Les jeux notés par le site (envoi ou récupération) d'abord, mais vérifiés comme les autres : une récupération dans le
+    // mauvais jeu, corrigée à la main depuis, y a laissé une autre partie.
+    auto note = [&](const JeuGb* jeu) {
+        return std::find(ligne.site.cles.begin(), ligne.site.cles.end(), jeu->cible.cle) != ligne.site.cles.end();
+    };
+    std::stable_partition(compatibles.begin(), compatibles.end(), note);
+
+    const JeuGb* choisi = nullptr;
+    for (const auto* jeu : compatibles)
+    {
+        if (choisi)
+            break;
+        if (!jeu->partie)
+            continue;
+        std::vector<u8> contenu;
+        std::string erreur;
+        if (!lireSauvegarde(jeu->cible, contenu, erreur))
+            continue;
+        if (empreinte(contenu) == ligne.site.empreinte)
+        {
+            choisi = jeu;
+            break;
+        }
+        auto avis = comparer(config.site, config.jeton, ligne.site.id, contenu);
+        if (avis.jetonRefuse)
+        {
+            compte.clear();
+            definirStatut(avis.message, ROUGE);
+            return false;
+        }
+        if (avis.verdict != Verdict::Erreur && avis.raison != "autre-partie")
+            choisi = jeu; // la même partie (à jour, récupérable, ou plus avancée sur la console)
+    }
+
+    if (choisi)
+    {
+        ligne.cible = choisi->cible;
+        ligne.remplace = true;
+        ligne.possible = true;
+        prises.insert(ligne.cible.cle);
+        return true;
+    }
+    // Placement dans un jeu sans partie : la langue doit être la même (la sauvegarde contient des adresses propres à la
+    // ROM de sa langue). Connue si la sauvegarde a été envoyée depuis un jeu de la Console virtuelle de cette console.
+    // La version aussi (Rouge dans Rouge, Bleu dans Bleu), quand elle est connue : par le jeu d'origine ou le nom du fichier.
+    u64 origine = titreDOrigine(ligne.site);
+    std::string langue = origine ? langueDuTitre(origine) : "";
+    std::string version = versionGbDuSite(ligne.site);
+    const JeuGb* place = nullptr;
+    bool autreLangue = false, autreVersion = false;
+    for (const auto* jeu : compatibles)
+    {
+        if (jeu->partie)
+            continue;
+        if (!langue.empty() && !jeu->langue.empty() && langue != jeu->langue)
+        {
+            autreLangue = true;
+            continue;
+        }
+        if (!version.empty() && !jeu->version.empty() && version != jeu->version)
+        {
+            autreVersion = true;
+            continue;
+        }
+        // Le jeu d'origine d'abord, puis la même langue, puis la même version.
+        auto rang = [&](const JeuGb* j) {
+            return (j->cible.titre == origine ? 4 : 0) + (!langue.empty() && j->langue == langue ? 2 : 0)
+                + (!version.empty() && j->version == version ? 1 : 0);
+        };
+        if (!place || rang(jeu) > rang(place))
+            place = jeu;
+    }
+    if (place)
+    {
+        ligne.cible = place->cible;
+        ligne.possible = true;
+        prises.insert(ligne.cible.cle);
+        ligne.etat = "à placer", ligne.couleur = CYAN;
+        ligne.message = "Pas encore sur la console : ce jeu a été lancé mais n'a pas de partie. Coche-la pour l'y mettre.";
+        if (langue.empty() || place->langue.empty())
+            ligne.message += " Attention, langue de la sauvegarde inconnue (envoyée depuis un émulateur ?) : si ce n'est pas "
+                             "celle du jeu" + (place->langue.empty() ? std::string() : " (" + place->langue + ")")
+                + ", la partie sera inutilisable.";
+        if (version.empty())
+            ligne.message += " Version inconnue (ni le jeu d'origine ni le nom du fichier ne la disent) : elle va dans "
+                + place->cible.nom + ".";
+        return true;
+    }
+    if (autreVersion && !autreLangue)
+    {
+        ligne.etat = "pas de place", ligne.couleur = GRIS;
+        ligne.message = "Aucun jeu Pokémon " + version + " sans partie sur la console (les autres jeux compatibles ont déjà "
+                        "une partie, ou sont d'une autre version).";
+    }
+    else if (autreLangue)
+    {
+        ligne.etat = "autre lang.", ligne.couleur = GRIS; // 11 cases (LARGEUR_ETAT)
+        ligne.message = "Cette sauvegarde vient d'un jeu en " + langue + " ; les jeux compatibles sans partie de la console "
+                        "sont dans une autre langue, où elle serait inutilisable.";
+    }
+    else if (compatibles.empty())
+    {
+        ligne.etat = "pas de jeu", ligne.couleur = GRIS;
+        ligne.message = "Aucun jeu Game Boy compatible (même jeu, même région) lancé au moins une fois sur la console : "
+                        "installe-le et lance-le une fois, puis relis la liste (SELECT).";
+    }
+    else
+    {
+        ligne.etat = "pas de place", ligne.couleur = GRIS;
+        ligne.message = "Les jeux compatibles de la console ont déjà une autre partie : elle ne sera pas écrasée.";
+    }
+    return true;
 }
 
 /// Liste « Récupérer » : sauvegardes du site, destination de chacune sur la console, et avis du site pour celles qui
@@ -524,19 +688,25 @@ void preparerRecuperation()
         return;
     }
 
+    patienter("Recherche des ROM DS et des jeux Game Boy...");
     auto roms = chercherRomsDs(config.dossiers);
-    std::set<std::string> prises;
+    auto jeuxGb = chercherJeuxGb();
+    std::set<std::string> prises; // clés déjà données à une ligne
     for (const auto& site : liste.sauvegardes)
     {
         LigneSite ligne;
         ligne.site = site;
-        if (site.console != "ds")
+        if (site.console == "gb")
+        {
+            // placées ensuite : celles dont la version est connue d'abord
+        }
+        else if (site.console != "ds")
         {
             ligne.etat = "plus tard", ligne.couleur = GRIS;
             ligne.message = "La récupération des sauvegardes " + nomDeConsole(site.console)
-                + " viendra plus tard : pour l'instant, seulement les sauvegardes DS.";
+                + " viendra plus tard : pour l'instant, seulement les sauvegardes DS et Game Boy.";
         }
-        else if ((ligne.destination = destinationDs(site, roms, prises)).empty())
+        else if (auto chemin = destinationDs(site, roms, prises); chemin.empty())
         {
             ligne.etat = "pas de ROM", ligne.couleur = GRIS;
             ligne.message = "Aucune ROM de ce jeu sans sauvegarde sur la carte SD : ajoute-la (à la racine pour "
@@ -544,8 +714,9 @@ void preparerRecuperation()
         }
         else
         {
-            prises.insert(ligne.destination);
-            ligne.remplace = fichierExiste(ligne.destination);
+            ligne.cible = cibleSD(chemin);
+            prises.insert(ligne.cible.cle);
+            ligne.remplace = fichierExiste(chemin);
             ligne.possible = true;
             if (!ligne.remplace)
                 ligne.etat = "à placer", ligne.couleur = CYAN,
@@ -553,6 +724,18 @@ void preparerRecuperation()
         }
         lignesSite.push_back(ligne);
     }
+    for (bool versionConnue : {true, false})
+        for (auto& ligne : lignesSite)
+        {
+            if (ligne.site.console != "gb" || !versionGbDuSite(ligne.site).empty() != versionConnue)
+                continue;
+            patienter("Recherche de la place de " + ligne.site.jeu + " — " + ligne.site.dresseur + "...");
+            if (!placerGb(ligne, jeuxGb, prises))
+            {
+                lignesSite.clear();
+                return; // console plus reliée : message déjà affiché
+            }
+        }
 
     // Sauvegardes déjà sur la console : le site dit si elles peuvent être remplacées.
     int total = std::count_if(lignesSite.begin(), lignesSite.end(), [](const LigneSite& l) { return l.remplace; });
@@ -565,12 +748,9 @@ void preparerRecuperation()
         snprintf(progression, sizeof progression, "Comparaison %d/%d : ", ++numero, total);
         patienter(progression + ligne.site.jeu + " — " + ligne.site.dresseur + "...");
 
-        Sauvegarde locale;
-        locale.origine = Origine::CarteSD;
-        locale.chemin = ligne.destination;
         std::vector<u8> contenu;
         std::string erreur;
-        if (!lireSauvegarde(locale, contenu, erreur))
+        if (!lireSauvegarde(ligne.cible, contenu, erreur))
         {
             ligne.etat = "illisible", ligne.couleur = ROUGE, ligne.message = erreur, ligne.possible = false;
             continue;
@@ -635,7 +815,7 @@ void recupererCochees()
         snprintf(progression, sizeof progression, "Récupération %d/%d : ", ++numero, total);
         patienter(progression + ligne.site.jeu + " — " + ligne.site.dresseur + "...");
 
-        auto fichier = telecharger(config.site, config.jeton, ligne.site.id, "sd:" + ligne.destination);
+        auto fichier = telecharger(config.site, config.jeton, ligne.site.id, ligne.cible.cle);
         if (fichier.jetonRefuse)
         {
             compte.clear();
@@ -647,12 +827,17 @@ void recupererCochees()
             message = fichier.message;
         else if (empreinte(fichier.contenu) != ligne.site.empreinte)
             message = "Le fichier reçu n'est pas celui de la liste (modifié sur le site entre-temps ?) : relis la liste (SELECT).";
-        else if (ecrireSauvegardeSD(ligne.destination, fichier.contenu, message))
+        else if (ligne.cible.origine == Origine::CarteSD ? ecrireSauvegardeSD(ligne.cible.chemin, fichier.contenu, message)
+                                                          : ecrireSauvegardeTitre(ligne.cible, fichier.contenu, message))
         {
             ligne.etat = "récupérée", ligne.couleur = VERT, ligne.cochee = false, ligne.possible = false;
-            ligne.message = "Écrite dans " + ligne.destination + (message.empty() ? "." : ". " + message);
-            // Pour l'envoi, c'est désormais la version du site : « envoyée » tant qu'on n'y rejoue pas.
-            envois.noter("sd:" + ligne.destination, ligne.site.empreinte + "|" + nomDeFichier(ligne.destination));
+            ligne.message = "Écrite dans " + lieu(ligne.cible) + (message.empty() ? "." : ". " + message);
+            // Pour l'envoi, c'est désormais la version du site : « envoyée » tant qu'on n'y rejoue pas. Empreinte de ce qui
+            // a été écrit (une sauvegarde Game Boy d'émulateur est raccourcie à la mémoire du jeu, 32 Ko).
+            std::vector<u8> ecrite;
+            std::string erreur;
+            envois.noter(ligne.cible.cle, (lireSauvegarde(ligne.cible, ecrite, erreur) ? empreinte(ecrite) : ligne.site.empreinte)
+                + "|" + ligne.cible.fichier);
             rechercherAuRetour = true;
             reussies++;
             continue;

@@ -32,6 +32,9 @@ une instance de test du site (voir son CLAUDE.md).
 - Format de cette sauvegarde : 2 emplacements (en-tête « .SAV » de 0x200 + sauvegarde), 0x40400 octets pour 128 Ko ;
   taille d'un emplacement déduite de la taille du fichier (le champ 0x58 valait 0xFFFFFFFF sur la console), plus récent
   d'après le nombre d'écritures (0x34). Le chemin 1, 1, 3 existe aussi pour les jeux 3DS (image chiffrée, sans « .SAV »).
+- Écrire la sauvegarde d'un jeu installé (comme PKSM) : `FSFILE_Write` puis `FSUSER_ControlArchive(...COMMIT_SAVE_DATA)`
+  (sinon rien n'est gardé), puis `FSUSER_ControlSecureSave(SECURESAVE_ACTION_DELETE, (SLOT_SD << 32) | (lowId & ~0xFF))`,
+  sinon le jeu croit sa sauvegarde corrompue (protection contre le retour en arrière). Jeu jamais lancé : pas d'archive.
 - Icône (SMDH) d'un titre : la lire en entier (0x36C0 octets), comme Checkpoint ; une lecture partielle a échoué.
 - `diagnostic.txt` (sdmc:/3ds/PokeBankSync) : journal de la recherche des jeux installés, à demander à l'utilisateur.
 - Pas d'exceptions ni de RTTI (`-fno-exceptions -fno-rtti`, Makefile de devkitPro).

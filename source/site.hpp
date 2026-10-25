@@ -98,6 +98,7 @@ struct ResultatComparaison
     Verdict verdict = Verdict::Erreur;
     bool modifieeSurSite = false;
     bool jetonRefuse = false;
+    std::string raison; // refus : « autre-partie », « plus-avancee », « illisible », « absente »
     std::string message;
 };
 

@@ -234,17 +234,19 @@ bool lireDansArchive(FS_Archive archive, const char* nom, std::vector<u8>& conte
 /// à son contenu comme le fait PKHeX : la liste de l'équipe (nombre de Pokémon, 6 au plus, puis 0xFF après le dernier)
 /// à sa place dans chaque version, internationale ou japonaise. Vérifié sur de vraies sauvegardes Rouge, Bleu et
 /// Argent (Noir et Rubis Oméga écartées). Nullptr si ce n'en est pas une.
-const char* jeuGameBoy(const std::vector<u8>& sauvegarde)
+struct ListeGameBoy
 {
-    struct Liste
-    {
-        u32 position;
-        const char* jeu;
-    };
-    static const Liste LISTES[] = {
-        {0x2F2C, "Pokémon Rouge, Bleu ou Jaune"}, {0x2ED5, "Pokémon Rouge, Vert, Bleu ou Jaune"},
-        {0x288A, "Pokémon Or ou Argent"}, {0x283E, "Pokémon Or ou Argent"},
-        {0x2865, "Pokémon Cristal"}, {0x281A, "Pokémon Cristal"},
+    u32 position;
+    const char* jeu;
+    const char* famille; // comme le site (SyncService.DescribeForConsole) ; « G1 » : Rouge, Bleu ou Jaune, sans savoir lequel
+};
+
+const ListeGameBoy* listeGameBoy(const std::vector<u8>& sauvegarde)
+{
+    static const ListeGameBoy LISTES[] = {
+        {0x2F2C, "Pokémon Rouge, Bleu ou Jaune", "G1"}, {0x2ED5, "Pokémon Rouge, Vert, Bleu ou Jaune", "G1-JP"},
+        {0x288A, "Pokémon Or ou Argent", "GS"}, {0x283E, "Pokémon Or ou Argent", "GS-JP"},
+        {0x2865, "Pokémon Cristal", "C"}, {0x281A, "Pokémon Cristal", "C-JP"},
     };
     if (sauvegarde.size() < 0x8000 || sauvegarde.size() > 0x8100)
         return nullptr;
@@ -252,8 +254,15 @@ const char* jeuGameBoy(const std::vector<u8>& sauvegarde)
     {
         u8 nombre = sauvegarde[liste.position];
         if (nombre <= 6 && sauvegarde[liste.position + 1 + nombre] == 0xFF)
-            return liste.jeu;
+            return &liste;
     }
+    return nullptr;
+}
+
+const char* jeuGameBoy(const std::vector<u8>& sauvegarde)
+{
+    if (const auto* liste = listeGameBoy(sauvegarde))
+        return liste->jeu;
     return nullptr;
 }
 
@@ -557,21 +566,26 @@ void chercherJeuNonRepertorie(u64 titre, FS_MediaType media, std::vector<Sauvega
     trouvees.push_back(s);
 }
 
-void chercherSurSupport(FS_MediaType media, std::vector<Sauvegarde>& trouvees)
+/// Jeux installés sur ce support (ni mises à jour, ni démos, ni titres système).
+std::vector<u64> titresInstalles(FS_MediaType media)
 {
     u32 nombre = 0;
     if (R_FAILED(AM_GetTitleCount(media, &nombre)) || nombre == 0)
-        return;
+        return {};
     std::vector<u64> titres(nombre);
     u32 lus = 0;
     if (R_FAILED(AM_GetTitleList(&lus, media, nombre, titres.data())))
-        return;
+        return {};
     titres.resize(lus);
+    titres.erase(std::remove_if(titres.begin(), titres.end(), [](u64 titre) { return static_cast<u32>(titre >> 32) != APPLICATION; }),
+        titres.end());
+    return titres;
+}
 
-    for (u64 titre : titres)
+void chercherSurSupport(FS_MediaType media, std::vector<Sauvegarde>& trouvees)
+{
+    for (u64 titre : titresInstalles(media))
     {
-        if (static_cast<u32>(titre >> 32) != APPLICATION)
-            continue;
         auto* connu = jeuConnu(titre);
         if (!connu)
         {
@@ -1096,28 +1110,252 @@ std::vector<std::string> codesPourFamille(const std::string& famille)
     return {};
 }
 
+namespace {
+
+/// Copie de sécurité datée de la sauvegarde de la console (sdmc:/3ds/PokeBankSync/copies/<date>_<nom>), avant tout
+/// remplacement. Faux, avec le message, si elle n'a pas pu être écrite : rien ne doit alors être remplacé.
+bool copierAvant(const std::string& nom, const std::vector<u8>& ancienne, std::string& message)
+{
+    mkdir("sdmc:/3ds", 0777);
+    mkdir(DOSSIER_APPLI, 0777);
+    auto copies = std::string(DOSSIER_APPLI) + "/copies";
+    mkdir(copies.c_str(), 0777);
+    time_t maintenant = time(nullptr);
+    char date[32];
+    strftime(date, sizeof date, "%Y%m%d-%H%M%S", localtime(&maintenant));
+    auto copie = copies + "/" + date + "_" + nom;
+    if (!ecrireFichier(copie, ancienne))
+    {
+        message = "Copie de sécurité impossible (" + copie + ") : rien n'a été écrit.";
+        return false;
+    }
+    message = "Ancienne sauvegarde copiée dans " + copie + ".";
+    return true;
+}
+
+/// Famille d'un jeu Game Boy connu (même nom que celle du site) : « RB », « YW », « GS », « C », plus « -JP » ou « -KO ».
+std::string familleGb(const JeuConnu& jeu)
+{
+    std::string nom = jeu.nom;
+    std::string famille = nom == "Pokémon Jaune" ? "YW"
+        : nom == "Pokémon Cristal"               ? "C"
+        : (nom == "Pokémon Or" || nom == "Pokémon Argent") ? "GS"
+                                                 : "RB"; // Rouge, Vert, Bleu
+    if (std::string(jeu.region) == "japonais")
+        famille += "-JP";
+    else if (std::string(jeu.region) == "coréen")
+        famille += "-KO";
+    return famille;
+}
+
+} // namespace
+
+std::vector<JeuGb> chercherJeuxGb()
+{
+    std::vector<JeuGb> jeux;
+    for (u64 titre : titresInstalles(MEDIATYPE_SD))
+    {
+        auto* connu = jeuConnu(titre);
+        if (connu && !connu->region)
+            continue; // jeu 3DS
+        FS_Archive archive;
+        if (!ouvrirSauvegardeDuJeu(titre, MEDIATYPE_SD, archive))
+            continue; // jamais lancé (pas encore de sauvegarde), ou pas un jeu Game Boy
+        std::vector<u8> contenu;
+        bool lu = lireDansArchive(archive, "/sav.dat", contenu, 0x8100);
+        FSUSER_CloseArchive(archive);
+        if (!lu)
+            continue;
+        const auto* liste = listeGameBoy(contenu);
+        if (!connu && !liste)
+            continue; // jeu injecté sans partie Pokémon : rien ne dit que c'est un jeu Pokémon
+
+        JeuGb jeu;
+        jeu.partie = liste != nullptr;
+        jeu.famille = connu ? familleGb(*connu) : liste->famille;
+        jeu.langue = connu ? connu->region : "";
+        jeu.version = connu ? versionGbDansTexte(connu->nom) : "";
+        auto& cible = jeu.cible;
+        cible.origine = Origine::ConsoleVirtuelle;
+        cible.titre = titre;
+        cible.media = MEDIATYPE_SD;
+        cible.fichierInterne = "/sav.dat";
+        cible.cle = cleDuTitre(titre, MEDIATYPE_SD);
+        std::string nom;
+        cible.nom = connu ? connu->nom : (lireNomDuJeu(titre, MEDIATYPE_SD, nom) ? nom : liste->jeu);
+        cible.fichier = cible.nom + ".sav"; // comme dans la recherche (envoi)
+        cible.detail = connu ? std::string("Console virtuelle, version en ") + connu->region : "jeu Game Boy injecté";
+        jeux.push_back(jeu);
+    }
+    return jeux;
+}
+
+std::string versionGbDansTexte(const std::string& texte)
+{
+    static const std::pair<const char*, const char*> MOTS[] = {
+        {"rouge", "rouge"}, {"red", "rouge"}, {"rot", "rouge"}, {"rote", "rouge"}, {"rojo", "rouge"}, {"roja", "rouge"},
+        {"rosso", "rouge"}, {"rossa", "rouge"},
+        {"bleu", "bleu"}, {"blue", "bleu"}, {"blau", "bleu"}, {"blaue", "bleu"}, {"azul", "bleu"}, {"blu", "bleu"},
+        {"vert", "vert"}, {"green", "vert"}, {"verde", "vert"}, {"midori", "vert"},
+        {"jaune", "jaune"}, {"yellow", "jaune"}, {"gelb", "jaune"}, {"gelbe", "jaune"}, {"amarillo", "jaune"},
+        {"amarilla", "jaune"}, {"giallo", "jaune"}, {"gialla", "jaune"},
+        {"or", "or"}, {"gold", "or"}, {"goldene", "or"}, {"oro", "or"},
+        {"argent", "argent"}, {"silver", "argent"}, {"silber", "argent"}, {"silberne", "argent"}, {"plata", "argent"},
+        {"argento", "argent"},
+        {"cristal", "cristal"}, {"crystal", "cristal"}, {"kristall", "cristal"}, {"cristallo", "cristal"},
+    };
+    // Mots entiers, en minuscules (lettres ASCII seulement : « Pokémon » se coupe, sans gêne).
+    std::string trouvee;
+    std::string mot;
+    auto examiner = [&]() {
+        for (const auto& [cherche, version] : MOTS)
+            if (mot == cherche)
+            {
+                if (!trouvee.empty() && trouvee != version)
+                    trouvee = "?"; // deux versions nommées : on ne sait pas
+                else if (trouvee.empty())
+                    trouvee = version;
+            }
+        mot.clear();
+    };
+    for (char c : texte)
+    {
+        if (c >= 'A' && c <= 'Z')
+            mot += static_cast<char>(c - 'A' + 'a');
+        else if (c >= 'a' && c <= 'z')
+            mot += c;
+        else
+            examiner();
+    }
+    examiner();
+    return trouvee == "?" ? "" : trouvee;
+}
+
+std::string versionDuTitre(u64 titre)
+{
+    auto* connu = jeuConnu(titre);
+    return connu && connu->region ? versionGbDansTexte(connu->nom) : "";
+}
+
+std::string langueDuTitre(u64 titre)
+{
+    auto* connu = jeuConnu(titre);
+    return connu && connu->region ? connu->region : "";
+}
+
+bool familleGbCompatible(const std::string& site, const std::string& jeu)
+{
+    auto region = [](const std::string& famille) {
+        auto tiret = famille.find('-');
+        return tiret == std::string::npos ? std::string() : famille.substr(tiret);
+    };
+    auto base = [](const std::string& famille) { return famille.substr(0, famille.find('-')); };
+    if (region(site) != region(jeu)) // disposition différente en japonais et en coréen
+        return false;
+    return base(site) == base(jeu) || (base(jeu) == "G1" && (base(site) == "RB" || base(site) == "YW"));
+}
+
+bool ecrireSauvegardeTitre(const Sauvegarde& cible, const std::vector<u8>& contenu, std::string& message)
+{
+    FS_Archive archive;
+    if (!ouvrirSauvegardeDuJeu(cible.titre, cible.media, archive))
+    {
+        message = "Sauvegarde du jeu inaccessible : lance-le une fois, puis réessaie.";
+        return false;
+    }
+    std::vector<u8> ancienne;
+    if (!lireDansArchive(archive, cible.fichierInterne.c_str(), ancienne, TAILLE_MAX))
+    {
+        FSUSER_CloseArchive(archive);
+        message = "Sauvegarde du jeu illisible : rien n'a été écrit.";
+        return false;
+    }
+    // Sauvegarde Game Boy venue d'un émulateur : les 32 Ko de la mémoire du jeu, suivis de quelques octets propres à
+    // l'émulateur (32 792 octets pour une Rouge). Le jeu de la Console virtuelle n'a que la mémoire du jeu : on écrit ces
+    // 32 Ko, en gardant la fin de son propre fichier s'il en a une.
+    constexpr size_t MEMOIRE_GB = 0x8000;
+    auto tailleGameBoy = [](size_t taille) { return taille >= MEMOIRE_GB && taille <= 0x8100; };
+    std::vector<u8> aEcrire = contenu;
+    if (ancienne.size() != contenu.size() && tailleGameBoy(ancienne.size()) && tailleGameBoy(contenu.size()))
+    {
+        aEcrire = ancienne;
+        std::copy(contenu.begin(), contenu.begin() + MEMOIRE_GB, aEcrire.begin());
+    }
+    if (ancienne.size() != aEcrire.size())
+    {
+        FSUSER_CloseArchive(archive);
+        char texte[160];
+        snprintf(texte, sizeof texte, "Taille différente de celle du jeu (%u octets contre %u) : rien n'a été écrit.",
+            static_cast<unsigned>(contenu.size()), static_cast<unsigned>(ancienne.size()));
+        message = texte;
+        return false;
+    }
+    char nomCopie[48];
+    snprintf(nomCopie, sizeof nomCopie, "%016llX_%s", cible.titre, cible.fichierInterne.c_str() + 1);
+    std::string copie;
+    if (!copierAvant(nomCopie, ancienne, copie))
+    {
+        FSUSER_CloseArchive(archive);
+        message = copie;
+        return false;
+    }
+
+    // Écriture, puis validation de l'archive (comme PKSM) : sans validation, le système garde l'ancienne sauvegarde.
+    Handle fichier;
+    u32 ecrits = 0;
+    Result resultat = FSUSER_OpenFile(&fichier, archive, fsMakePath(PATH_ASCII, cible.fichierInterne.c_str()), FS_OPEN_WRITE, 0);
+    if (R_SUCCEEDED(resultat))
+    {
+        resultat = FSFILE_Write(fichier, &ecrits, 0, aEcrire.data(), aEcrire.size(), FS_WRITE_FLUSH);
+        FSFILE_Close(fichier);
+    }
+    if (R_FAILED(resultat) || ecrits != aEcrire.size())
+    {
+        FSUSER_CloseArchive(archive);
+        message = "Écriture dans la sauvegarde du jeu impossible : elle n'a pas été validée, l'ancienne reste en place. " + copie;
+        return false;
+    }
+    resultat = FSUSER_ControlArchive(archive, ARCHIVE_ACTION_COMMIT_SAVE_DATA, nullptr, 0, nullptr, 0);
+    FSUSER_CloseArchive(archive);
+    if (R_FAILED(resultat))
+    {
+        char texte[96];
+        snprintf(texte, sizeof texte, "Validation de la sauvegarde impossible (0x%08lX) : l'ancienne reste en place. ",
+            static_cast<unsigned long>(resultat));
+        message = texte + copie;
+        return false;
+    }
+
+    // Valeur sécurisée du jeu (protection contre le retour à une ancienne sauvegarde) : effacée, comme le fait PKSM,
+    // sinon le jeu croirait sa sauvegarde corrompue. Identifiant unique sans la variante (octet du bas).
+    u64 valeur = (static_cast<u64>(SECUREVALUE_SLOT_SD) << 32) | (static_cast<u32>(cible.titre) & 0xFFFFFF00);
+    u8 existait = 0;
+    resultat = FSUSER_ControlSecureSave(SECURESAVE_ACTION_DELETE, &valeur, sizeof valeur, &existait, 1);
+    message = copie;
+    if (R_FAILED(resultat))
+    {
+        char texte[160];
+        snprintf(texte, sizeof texte, " Attention : valeur sécurisée non effacée (0x%08lX), le jeu pourrait dire sa sauvegarde corrompue.",
+            static_cast<unsigned long>(resultat));
+        message += texte;
+    }
+    return true;
+}
+
 bool ecrireSauvegardeSD(const std::string& chemin, const std::vector<u8>& contenu, std::string& message)
 {
     bool existe = fichierExiste(chemin);
     if (existe)
     {
-        // Copie de sécurité de la sauvegarde de la console, datée, avant tout remplacement.
-        mkdir("sdmc:/3ds", 0777);
-        mkdir(DOSSIER_APPLI, 0777);
-        auto copies = std::string(DOSSIER_APPLI) + "/copies";
-        mkdir(copies.c_str(), 0777);
-        time_t maintenant = time(nullptr);
-        char date[32];
-        strftime(date, sizeof date, "%Y%m%d-%H%M%S", localtime(&maintenant));
-        auto copie = copies + "/" + date + "_" + nomDeFichier(chemin);
         std::vector<u8> ancienne;
         std::string erreur;
-        if (!lireFichierSD(chemin, ancienne, erreur) || !ecrireFichier(copie, ancienne))
+        if (!lireFichierSD(chemin, ancienne, erreur))
         {
-            message = "Copie de sécurité impossible (" + copie + ") : rien n'a été écrit.";
+            message = "Sauvegarde de la console illisible (" + erreur + ") : rien n'a été écrit.";
             return false;
         }
-        message = "Ancienne sauvegarde copiée dans " + copie + ".";
+        if (!copierAvant(nomDeFichier(chemin), ancienne, message))
+            return false;
     }
     else
     {
